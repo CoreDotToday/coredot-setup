@@ -1,0 +1,95 @@
+{
+  "manager": {
+    "version": "1.0.0",
+    "url": "",
+    "sha256": "",
+    "size": 0
+  },
+  "items": [
+    {
+      "id": "epson-l8050",
+      "name": "Epson L8050",
+      "kind": "driver",
+      "source": "drivers/epson-l8050",
+      "inf": "e1wf1b0e.inf",
+      "printers": [
+        "EPSON L8050 Series"
+      ],
+      "version": "3.80.05.00",
+      "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/epson-l8050-3.80.05.00.zip",
+      "sha256": "34fdccd13dddd9c938d665669f48c5e2983c24c9f7d85f2acfcf3df648012871",
+      "size": 37518896
+    },
+    {
+      "id": "epson-l18050",
+      "name": "Epson L18050",
+      "kind": "driver",
+      "source": "drivers/epson-l18050",
+      "inf": "e1wf1b1e.inf",
+      "printers": [
+        "EPSON L18050 Series"
+      ],
+      "version": "3.80.05.00",
+      "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/epson-l18050-3.80.05.00.zip",
+      "sha256": "e4bcf89a01e203d5b5db99328608724edbdf9d70b0cb9a50eed4a5dbe7a322df",
+      "size": 37543449
+    },
+    {
+      "id": "evolis",
+      "name": "Evolis 카드 프린터",
+      "kind": "driver",
+      "source": "drivers/evolis",
+      "inf": "evoun02.inf",
+      "printers": [
+        "Evolis Agilia"
+      ],
+      "tools": [
+        {
+          "label": "Evolis 관리",
+          "path": "%ProgramFiles%\\Evolis Card Printer 2\\Evolis Premium Suite 2\\bin\\evomanager.exe"
+        }
+      ],
+      "version": "8.1.0.10492",
+      "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/evolis-8.1.0.10492.zip",
+      "sha256": "9fd5b83b7d481909f14c5b7ae1874b6115d3202c588ae102056b2d93b81fa349",
+      "size": 1574266
+    },
+    {
+      "id": "idp-smart32",
+      "name": "IDP SMART-32",
+      "kind": "driver",
+      "source": "drivers/idp-smart32",
+      "inf": "smart52.inf",
+      "printers": [
+        "IDP SMART-32 Card Printer"
+      ],
+      "tools": [
+        {
+          "label": "프린터 도구",
+          "path": "%WINDIR%\\System32\\CardPrinterConfig.exe"
+        },
+        {
+          "label": "헤드 청소",
+          "path": "%WINDIR%\\System32\\CleanPrinter.exe"
+        }
+      ],
+      "version": "2.26.10.20",
+      "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/idp-smart32-2.26.10.20.zip",
+      "sha256": "bf185821e45d1e7854c80e69a771ee50edde3c39d8b0b05a587c701a9dda8ad6",
+      "size": 162169504
+    },
+    {
+      "id": "logitune",
+      "name": "Logi Tune",
+      "kind": "exe",
+      "source": "extras/LogiTuneInstall.exe",
+      "args": "/quiet /norestart",
+      "detect": "Logi Tune",
+      "open": "%ProgramFiles%\\Logitech\\LogiTune\\LogiTune.exe",
+      "version": "3.15.96.0",
+      "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/logitune-3.15.96.0.exe",
+      "sha256": "1f6c458558d174f8eee40507255dfb49af2e3bc3f0811a421b614282cbaa2ba1",
+      "size": 218593896
+    }
+  ]
+}

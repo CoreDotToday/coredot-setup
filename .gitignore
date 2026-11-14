@@ -1,0 +1,15 @@
+# 큰 설치 파일은 git 이 아니라 Releases('packages' 태그)에 올린다 — tools\publish-packages.ps1
+drivers/
+extras/
+packages/
+
+# 빌드 결과
+build/
+dist/
+*.exe
+*.zip
+*.pdb
+
+# 혹시라도 앱 설정(중앙 연결 토큰 포함)이 섞여 들어오지 않게
+config.json
+*.printerExport
