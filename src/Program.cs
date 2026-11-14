@@ -14,7 +14,7 @@ namespace CoreDot
 {
     static class Program
     {
-        public const string Version = "1.0.1";
+        public const string Version = "1.0.2";
 
         [STAThread]
         static int Main(string[] args)

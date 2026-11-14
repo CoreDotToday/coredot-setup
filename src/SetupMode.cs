@@ -56,6 +56,7 @@ namespace CoreDot
         // ================================================================ 설치
         public static int Run(bool silent)
         {
+            EnsureDataDir();   // 로그를 쓰기 전에 — 폴더 권한부터
             Core.LogFile = Path.Combine(Paths.DataDir, @"logs\install.log");
             Core.Log("==== 코어닷 관리센터 " + Program.Version + " 설치 시작 (" + SelfPath() + ")");
 
@@ -167,15 +168,27 @@ namespace CoreDot
         static void InstallManagerFiles()
         {
             Engine.ReplaceManager(SelfPath());
-            Directory.CreateDirectory(Paths.Cache);
-            Directory.CreateDirectory(Paths.Requests);
-            Directory.CreateDirectory(Path.GetDirectoryName(Paths.ServiceLog));
-            // ProgramData\CoreDot: SYSTEM · 관리자만 쓰기, 사용자는 읽기 — 받은 설치 파일을 사용자가 바꿔치기 못 하게
-            string icacls = Engine.Sys32("icacls.exe");
-            Engine.Run(icacls, "\"" + Paths.DataDir + "\" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX /T /C /Q", 120000);
-            // requests: 사용자가 '설치해 줘' 를 적는 곳 (서비스는 여기서 id 만 읽는다)
-            Engine.Run(icacls, "\"" + Paths.Requests + "\" /grant *S-1-5-32-545:(OI)(CI)M /C /Q", 60000);
             Core.Log("관리센터 설치: " + Paths.ManagerExe);
+        }
+
+        /// <summary>ProgramData\CoreDot 권한: SYSTEM · 관리자만 쓰기, 사용자는 읽기 — 받은 설치 파일을 사용자가 바꿔치기 못 하게.
+        /// requests 만 사용자 쓰기 ('설치해 줘' 를 적는 곳, 서비스는 여기서 id 만 읽는다).
+        /// 폴더에만 상속 권한을 걸고 안의 것은 /reset 으로 물려받게 한다 — 파일에 (OI)(CI) 를 직접 걸면 icacls 가 실패해
+        /// 권한이 빈 파일이 남는다 (1.0.0 · 1.0.1 의 install.log). 설치기 · 서비스가 시작할 때마다 불러 그런 PC 도 고친다.</summary>
+        public static void EnsureDataDir()
+        {
+            try
+            {
+                Directory.CreateDirectory(Paths.DataDir);
+                string icacls = Engine.Sys32("icacls.exe");
+                Engine.Run(icacls, "\"" + Paths.DataDir + "\" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX /C /Q", 60000);
+                Engine.Run(icacls, "\"" + Paths.DataDir + "\\*\" /reset /T /C /Q", 120000);
+                Directory.CreateDirectory(Paths.Cache);
+                Directory.CreateDirectory(Paths.Requests);
+                Directory.CreateDirectory(Path.GetDirectoryName(Paths.ServiceLog));
+                Engine.Run(icacls, "\"" + Paths.Requests + "\" /grant *S-1-5-32-545:(OI)(CI)M /C /Q", 60000);
+            }
+            catch (Exception e) { Core.Log("ProgramData 권한 설정 실패: " + e.Message); }
         }
 
         // ---------------------------------------------------------------- 작업 · 바로 가기 · 제어판

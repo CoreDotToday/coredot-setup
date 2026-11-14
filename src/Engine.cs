@@ -211,9 +211,8 @@ namespace CoreDot
 
         public static int Run()
         {
+            SetupMode.EnsureDataDir();   // 1.0.1 이하가 망가뜨린 파일 권한도 여기서 고쳐진다
             Core.LogFile = Paths.ServiceLog;
-            Directory.CreateDirectory(Paths.Cache);
-            Directory.CreateDirectory(Paths.Requests);
             bool created;
             using (var m = new Mutex(true, @"Global\CoreDotInstaller", out created))
             {
