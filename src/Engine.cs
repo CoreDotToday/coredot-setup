@@ -86,6 +86,7 @@ namespace CoreDot
                         "-NoProfile -ExecutionPolicy Bypass -Command \"Add-PrinterDriver -Name '" + n + "' -ErrorAction Stop\"", 5 * 60 * 1000);
                 }
                 try { Directory.Delete(dir, true); } catch { }
+                RemoveOlderDriverPackages(it);
             }
             else
             {
@@ -95,6 +96,23 @@ namespace CoreDot
                 else if (code != 0 && code != 1638) throw new Exception("설치 실패 (코드 " + code + ")");
             }
             Say(it.Id, "done", it.Version + " 설치 완료");
+        }
+
+        /// <summary>새 판을 넣은 뒤 드라이버 저장소에 남은 같은 INF 의 예전 판을 지운다 — 업데이트를 거듭해도 깔끔하게.
+        /// /force 없이 지우므로 아직 어떤 장치가 쓰고 있는 판은 Windows 가 거절해 그대로 남는다 (안전).</summary>
+        void RemoveOlderDriverPackages(Item it)
+        {
+            if (string.IsNullOrEmpty(it.Inf) || string.IsNullOrEmpty(it.Version)) return;
+            try
+            {
+                string inf = it.Inf.Replace("'", "''"), ver = it.Version.Replace("'", "''");
+                string ps =
+                    "$inf='" + inf + "'; $new=[version]'" + ver + "'; " +
+                    "Get-WindowsDriver -Online | Where-Object { (Split-Path $_.OriginalFileName -Leaf) -eq $inf -and [version]$_.Version -lt $new } | " +
+                    "ForEach-Object { Write-Output ('remove ' + $_.Driver + ' ' + $_.Version); pnputil /delete-driver $_.Driver | Select-Object -Last 1 }";
+                Run(Sys32(@"WindowsPowerShell\v1.0\powershell.exe"), "-NoProfile -ExecutionPolicy Bypass -Command \"" + ps + "\"", 10 * 60 * 1000);
+            }
+            catch (Exception e) { Core.Log("예전 드라이버 판 정리 실패 (무시): " + e.Message); }
         }
 
         public void InstallManager(CatalogData cat)

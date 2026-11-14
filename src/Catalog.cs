@@ -204,27 +204,63 @@ namespace CoreDot
         }
 
         // ------------------------------------------------------------ 프린터 연결 상태
-        public class PrinterInfo { public string Name, Driver; public bool Offline; }
+        public class PrinterInfo { public string Name, Driver, Port; public bool Offline; }
 
         public static List<PrinterInfo> Printers()
         {
             var list = new List<PrinterInfo>();
+            var live = LiveUsbPorts();
             try
             {
-                using (var s = new ManagementObjectSearcher("SELECT Name, DriverName, WorkOffline FROM Win32_Printer"))
+                using (var s = new ManagementObjectSearcher("SELECT Name, DriverName, PortName, WorkOffline FROM Win32_Printer"))
                 {
                     foreach (ManagementObject o in s.Get())
                     {
                         var p = new PrinterInfo();
                         p.Name = o["Name"] as string;
                         p.Driver = o["DriverName"] as string;
-                        p.Offline = o["WorkOffline"] is bool && (bool)o["WorkOffline"];
+                        p.Port = o["PortName"] as string;
+                        // USB 포트면 '지금 그 포트에 장치가 꽂혀 있나' 로 본다 — 드라이버마다 '오프라인' 표시를 하는 곳 · 안 하는 곳이
+                        // 있어서(IDP 는 뽑아도 온라인으로 남는다) Win32_Printer.WorkOffline 만으로는 틀린다
+                        if (p.Port != null && p.Port.StartsWith("USB", StringComparison.OrdinalIgnoreCase) && live != null)
+                            p.Offline = !live.Contains(p.Port.ToUpperInvariant());
+                        else
+                            p.Offline = o["WorkOffline"] is bool && (bool)o["WorkOffline"];
                         list.Add(p);
                     }
                 }
             }
             catch (Exception e) { Core.Log("프린터 목록 실패: " + e.Message); }
             return list;
+        }
+
+        /// <summary>지금 장치가 꽂혀 있는 USB 인쇄 포트 (예: USB006). USB 인쇄 장치 인터페이스의 '#\Control' 키는 장치가 연결돼
+        /// 있을 때만 생긴다 (Linked=1). 못 읽으면 null.</summary>
+        public static HashSet<string> LiveUsbPorts()
+        {
+            try
+            {
+                var set = new HashSet<string>();
+                using (var cls = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\DeviceClasses\{28d78fad-5a12-11d1-ae5b-0000f803a8c2}"))
+                {
+                    if (cls == null) return set;
+                    foreach (var name in cls.GetSubKeyNames())
+                    {
+                        using (var dp = cls.OpenSubKey(name + @"\#\Device Parameters"))
+                        using (var ctl = cls.OpenSubKey(name + @"\#\Control"))
+                        {
+                            if (dp == null || ctl == null) continue;
+                            object linked = ctl.GetValue("Linked");
+                            if (!(linked is int) || (int)linked == 0) continue;
+                            string bas = dp.GetValue("Base Name") as string ?? "USB";
+                            object num = dp.GetValue("Port Number");
+                            if (num is int) set.Add((bas + ((int)num).ToString("000")).ToUpperInvariant());
+                        }
+                    }
+                }
+                return set;
+            }
+            catch (Exception e) { Core.Log("USB 포트 확인 실패: " + e.Message); return null; }
         }
 
         // ------------------------------------------------------------ 할 일
