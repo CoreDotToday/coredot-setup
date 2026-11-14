@@ -42,9 +42,18 @@ function Save-Catalog($cat) {
 
 function Get-Sha256($path) { (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() }
 
+# gh 가 stderr 에 쓰는 안내('release not found' 등)를 PowerShell 5.1 이 오류로 바꿔 멈추지 않게 — 종료 코드만 본다
+function Test-Gh {
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & gh @args 2>&1 | Out-Null; return ($LASTEXITCODE -eq 0) }
+    finally { $ErrorActionPreference = $old }
+}
+
+function Test-Release($tag) { Test-Gh release view $tag -R $Repo }
+
 function Ensure-Release($tag, $title, $notes, [switch]$NotLatest) {
-    gh release view $tag -R $Repo *> $null
-    if ($LASTEXITCODE -eq 0) { return }
+    if (Test-Release $tag) { return }
     $a = @('release', 'create', $tag, '-R', $Repo, '--title', $title, '--notes', $notes)
     if ($NotLatest) { $a += '--latest=false' }
     & gh @a
@@ -52,7 +61,12 @@ function Ensure-Release($tag, $title, $notes, [switch]$NotLatest) {
 }
 
 function Get-AssetNames($tag) {
-    $names = gh release view $tag -R $Repo --json assets -q '.assets[].name'
-    if ($LASTEXITCODE -ne 0) { return @() }
-    @($names)
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $names = gh release view $tag -R $Repo --json assets -q '.assets[].name' 2>$null
+        if ($LASTEXITCODE -ne 0) { return @() }
+        return @($names)
+    }
+    finally { $ErrorActionPreference = $old }
 }

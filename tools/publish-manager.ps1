@@ -12,8 +12,7 @@ $ver = [regex]::Match([IO.File]::ReadAllText((Join-Path $Root 'src\Program.cs'),
 $tag = "v$ver"
 $exe = Join-Path $Root 'dist\CoreDotSetup.exe'
 
-gh release view $tag -R $Repo *> $null
-if ($LASTEXITCODE -eq 0) {
+if (Test-Release $tag) {
     if (-not $Force) { throw "릴리스 $tag 가 이미 있습니다 — src\Program.cs 의 Version 을 올리세요 (같은 판을 덮어쓰려면 -Force)" }
     gh release upload $tag $exe -R $Repo --clobber
 } else {
