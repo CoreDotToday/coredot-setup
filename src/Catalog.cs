@@ -14,8 +14,14 @@ namespace CoreDot
         public string Label, Path, Args;
     }
 
+    public class DriverFamily
+    {
+        public string Inf, Manufacturer;
+    }
+
     public class Item
     {
+        public DriverFamily Replaces;              // exe: 처음 깔 때 먼저 지울 같은 제조사 드라이버 (예: Evolis)
         public string Id, Name, Kind, Version, Url, Sha256;
         public long Size;
         public string Inf;                         // driver: 드라이버 저장소의 원래 INF 이름 (예: e1wf1b0e.inf)
@@ -120,6 +126,8 @@ namespace CoreDot
                         foreach (object p in pr) if (p != null) list.Add(p.ToString());
                         it.Printers = list.ToArray();
                     }
+                    var rp = d.ContainsKey("replaces") ? d["replaces"] as Dictionary<string, object> : null;
+                    if (rp != null) it.Replaces = new DriverFamily { Inf = Core.Str(rp, "inf"), Manufacturer = Core.Str(rp, "manufacturer") };
                     var rc = d.ContainsKey("rebootCodes") ? d["rebootCodes"] as IEnumerable : null;
                     if (rc != null) foreach (object x2 in rc) { try { it.RebootCodes.Add(Convert.ToInt32(x2)); } catch { } }
                     var tools = d.ContainsKey("tools") ? d["tools"] as IEnumerable : null;

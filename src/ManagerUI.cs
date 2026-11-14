@@ -418,7 +418,7 @@ namespace CoreDot
 
                     if (v == null) { status = "설치 안 됨"; col = UI.Bad; }
                     else if (p != null) { status = "업데이트 있음 → " + p.To; col = UI.Warn; }
-                    else if (it.Kind == "driver")
+                    else if (it.Kind == "driver" || it.Printers.Length > 0)   // 드라이버가 든 프로그램(예: Evolis Premium Suite)도
                     {
                         int on = 0;
                         foreach (var pr in mine) if (!pr.Offline) on++;
@@ -428,7 +428,7 @@ namespace CoreDot
                     }
                     else { status = "최신"; col = UI.Ok; }
 
-                    if (it.Kind == "driver" && mine.Count > 0)
+                    if (mine.Count > 0)
                     {
                         var first = mine[0].Name;
                         if (mine.Count == 1) btns.Add(UI.Btn("인쇄 설정", delegate { UI.Open("rundll32.exe", "printui.dll,PrintUIEntry /e /n \"" + first + "\""); }));

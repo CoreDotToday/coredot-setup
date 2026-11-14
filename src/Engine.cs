@@ -90,6 +90,13 @@ namespace CoreDot
             }
             else
             {
+                // 처음 까는 것이면, 따로 깔려 있던 같은 제조사 드라이버를 먼저 치운다 (예: Evolis 설치 프로그램은
+                // 자기가 깔지 않은 Evolis 드라이버가 있으면 멈춘다). 이미 깔린 프로그램의 업데이트 때는 건드리지 않는다.
+                if (it.Replaces != null && Catalog.InstalledVersion(it) == null)
+                {
+                    Say(it.Id, "installing", "따로 깔린 드라이버 정리 중");
+                    RemoveDriverFamily(it.Replaces);
+                }
                 Say(it.Id, "installing", "설치 중");
                 int code = Run(file, it.Args, 30 * 60 * 1000);
                 if (code == 3010 || code == 1641 || it.RebootCodes.Contains(code)) NeedReboot = true;
@@ -102,7 +109,11 @@ namespace CoreDot
                         Core.Log("[" + it.Id + "] 종료 코드 " + code + " 이지만 " + have + " 가 설치됨 — 성공 (재부팅 권장)");
                         NeedReboot = true;
                     }
-                    else throw new Exception("설치 실패 (코드 " + code + ")");
+                    else
+                    {
+                        string why = ReasonFromLog(it.Args);
+                        throw new Exception("설치 실패 (코드 " + code + ")" + (why != null ? " — " + why : ""));
+                    }
                 }
             }
             Say(it.Id, "done", it.Version + " 설치 완료");
@@ -123,6 +134,56 @@ namespace CoreDot
                 Run(Sys32(@"WindowsPowerShell\v1.0\powershell.exe"), "-NoProfile -ExecutionPolicy Bypass -Command \"" + ps + "\"", 10 * 60 * 1000);
             }
             catch (Exception e) { Core.Log("예전 드라이버 판 정리 실패 (무시): " + e.Message); }
+        }
+
+        /// <summary>그 제조사의 인쇄 드라이버 · 프린터 대기열 · 드라이버 저장소 꾸러미를 지운다.
+        /// 프린터는 USB 를 다시 꽂거나(이미 꽂혀 있으면 새 드라이버가 깔릴 때) Windows 가 다시 만든다.</summary>
+        void RemoveDriverFamily(DriverFamily f)
+        {
+            try
+            {
+                string man = (f.Manufacturer ?? "").Replace("'", "''"), inf = (f.Inf ?? "").Replace("'", "''");
+                string ps =
+                    "$m='" + man + "'; $inf='" + inf + "'; " +
+                    "$d = @(Get-PrinterDriver | Where-Object { $m -and $_.Manufacturer -like ($m + '*') }); " +
+                    "$names = @($d | ForEach-Object { $_.Name }); " +
+                    "Get-Printer | Where-Object { $names -contains $_.DriverName } | ForEach-Object { Write-Output ('printer ' + $_.Name); Remove-Printer -Name $_.Name -ErrorAction SilentlyContinue }; " +
+                    "foreach ($x in $d) { Remove-PrinterDriver -Name $x.Name -PrinterEnvironment $x.PrinterEnvironment -ErrorAction SilentlyContinue }; " +
+                    "if (@(Get-PrinterDriver | Where-Object { $names -contains $_.Name }).Count -gt 0) { Restart-Service Spooler -Force; Start-Sleep 3; " +
+                    "  foreach ($x in $d) { Remove-PrinterDriver -Name $x.Name -PrinterEnvironment $x.PrinterEnvironment -ErrorAction SilentlyContinue } }; " +
+                    "if ($inf) { Get-WindowsDriver -Online | Where-Object { (Split-Path $_.OriginalFileName -Leaf) -eq $inf } | " +
+                    "  ForEach-Object { Write-Output ('package ' + $_.Driver + ' ' + $_.Version); pnputil /delete-driver $_.Driver /uninstall /force | Select-Object -Last 1 } }";
+                Run(Sys32(@"WindowsPowerShell\v1.0\powershell.exe"), "-NoProfile -ExecutionPolicy Bypass -Command \"" + ps + "\"", 10 * 60 * 1000);
+            }
+            catch (Exception e) { Core.Log("드라이버 정리 실패 (계속 진행): " + e.Message); }
+        }
+
+        /// <summary>설치 인자의 /LOG="…" 로그에서 실패 이유로 보이는 줄을 찾아 돌려준다 (Inno Setup 등).</summary>
+        static string ReasonFromLog(string args)
+        {
+            try
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(args ?? "", "/LOG=\"([^\"]+)\"", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (!m.Success || !File.Exists(m.Groups[1].Value)) return null;
+                Core.Log("설치 로그: " + m.Groups[1].Value);
+                var lines = File.ReadAllLines(m.Groups[1].Value);
+                string found = null, star = null;
+                foreach (var raw in lines)
+                {
+                    string l = raw.Length > 24 ? raw.Substring(24).Trim() : raw.Trim();   // 앞의 날짜 · 시각 떼기
+                    Core.Log("    | " + l);
+                    if (System.Text.RegularExpressions.Regex.IsMatch(l, "abort|cannot|error|fail|restart is needed|PrepareToInstall", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                        && !l.StartsWith("Got EAbort"))
+                    {
+                        found = l;
+                        if (star == null && l.StartsWith("***")) star = l;   // 제조사가 직접 적은 설명 줄 (예: Evolis)
+                    }
+                }
+                if (star != null) found = star;
+                if (found != null && found.Length > 180) found = found.Substring(0, 180) + "…";
+                return found;
+            }
+            catch { return null; }
         }
 
         public void InstallManager(CatalogData cat)
@@ -230,18 +291,21 @@ namespace CoreDot
                 try
                 {
                     // 늦게 온 요청까지 다 처리
-                    for (int round = 0; round < 20; round++)
+                    for (int round = 0; round < 20 && !handedOff; round++)
                     {
                         var files = Directory.GetFiles(Paths.Requests, "*.json");
                         if (files.Length == 0) break;
                         Array.Sort(files, delegate(string a, string b) { return File.GetCreationTimeUtc(a).CompareTo(File.GetCreationTimeUtc(b)); });
-                        foreach (var f in files) Handle(f);
+                        foreach (var f in files) { Handle(f); if (handedOff) break; }
                     }
                 }
                 finally { try { m.ReleaseMutex(); } catch { } }
             }
             return 0;
         }
+
+        // 관리센터를 새 판으로 바꾼 뒤 남은 항목은 새 판이 맡도록 넘긴다 (예전 판이 계속 설치하면 새 판의 고친 점이 안 먹는다)
+        static bool handedOff;
 
         static void Handle(string file)
         {
@@ -264,6 +328,10 @@ namespace CoreDot
             status["reboot"] = false;
             status["items"] = items;
             foreach (var id in ids) items[id] = State("waiting", "기다리는 중");
+            // 앞 판이 이미 끝낸 항목 (넘겨받은 요청)
+            var prior = req.ContainsKey("done") ? req["done"] as Dictionary<string, object> : null;
+            if (prior != null) foreach (var kv in prior) items[kv.Key] = State("done", kv.Value == null ? "완료" : kv.Value.ToString());
+            if (req.ContainsKey("reboot") && req["reboot"] is bool && (bool)req["reboot"]) status["reboot"] = true;
             WriteStatus(status);
 
             try
@@ -282,12 +350,19 @@ namespace CoreDot
                         lock (statusLock) { items[id] = State(state, msg); }
                         WriteStatus(status);
                     };
-                    foreach (var id in ids)
+                    for (int i = 0; i < ids.Count; i++)
                     {
+                        string id = ids[i];
                         if (id == "coredotprinter") continue;   // 사용자 쪽에서 (앱을 사용자 화면에서 다시 켜야 해서)
-                        engine.Install(cat, id);
+                        bool ok = engine.Install(cat, id);
+                        if (id == "manager" && ok && i < ids.Count - 1)
+                        {
+                            HandOff(rid, ids.GetRange(i + 1, ids.Count - i - 1), items, engine.NeedReboot || (status["reboot"] is bool && (bool)status["reboot"]));
+                            WriteStatus(status);
+                            return;   // done 은 새 판이 쓴다
+                        }
                     }
-                    status["reboot"] = engine.NeedReboot;
+                    if (engine.NeedReboot) status["reboot"] = true;
                 }
             }
             catch (Exception e)
@@ -298,6 +373,33 @@ namespace CoreDot
             status["done"] = true;
             WriteStatus(status);
             Core.Log("==== 요청 " + rid + " 끝");
+        }
+
+        /// <summary>같은 요청 번호로 남은 항목을 다시 적고 작업을 한 번 더 부른다 — 작업 설정이 '줄 세우기' 라 지금 것이
+        /// 끝나면 새 판 exe 로 이어서 돈다. 관리센터 창은 같은 요청 번호의 상태를 계속 본다.</summary>
+        static void HandOff(string rid, List<string> rest, Dictionary<string, object> items, bool reboot)
+        {
+            var done = new Dictionary<string, object>();
+            lock (statusLock)
+            {
+                foreach (var kv in items)
+                {
+                    var d = kv.Value as Dictionary<string, object>;
+                    if (Core.Str(d, "state") == "done") done[kv.Key] = Core.Str(d, "message");
+                }
+                foreach (var id in rest) items[id] = State("waiting", "새 관리센터로 이어서 설치");
+            }
+            var req = new Dictionary<string, object>();
+            req["action"] = "install";
+            req["ids"] = rest;
+            req["done"] = done;
+            req["reboot"] = reboot;
+            req["by"] = "handoff";
+            File.WriteAllText(Path.Combine(Paths.Requests, rid + ".json"), Core.ToJson(req), Encoding.UTF8);
+            handedOff = true;
+            Core.Log("==== 요청 " + rid + " 남은 항목 [" + string.Join(", ", rest.ToArray()) + "] 을 새 관리센터로 넘김");
+            try { Engine.Run(Engine.Sys32("schtasks.exe"), "/Run /TN \"" + ServiceClient.TaskPath + "\"", 30000); }
+            catch (Exception e) { Core.Log("작업 다시 부르기 실패: " + e.Message); }
         }
 
         static Dictionary<string, object> State(string state, string msg)
