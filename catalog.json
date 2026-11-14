@@ -1,9 +1,9 @@
 {
   "manager": {
-    "version": "1.0.2",
-    "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/v1.0.2/CoreDotSetup.exe",
-    "sha256": "cacac5bd4e8f86d487f6c98d3c6be0aa39baf748b857776a8bf977d4e9a99527",
-    "size": 72704
+    "version": "1.0.3",
+    "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/v1.0.3/CoreDotSetup.exe",
+    "sha256": "6efc9da06d3078baf5a901d6ef36ee381b06a204667357a4f70d5facc08176ab",
+    "size": 73216
   },
   "items": [
     {
@@ -53,6 +53,19 @@
       "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/evolis-8.1.0.10492.zip",
       "sha256": "9fd5b83b7d481909f14c5b7ae1874b6115d3202c588ae102056b2d93b81fa349",
       "size": 1574266
+    },
+    {
+      "id": "evolis-suite",
+      "name": "Evolis Premium Suite 2",
+      "kind": "exe",
+      "source": "extras/EvolisPremiumSuite2.exe",
+      "args": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /LOG=\"%ProgramData%\\CoreDot\\logs\\evolis-suite-install.log\"",
+      "detect": "Evolis Premium Suite 2*",
+      "open": "%ProgramFiles%\\Evolis Card Printer 2\\Evolis Premium Suite 2\\bin\\evomanager.exe",
+      "version": "9.4.0.33906",
+      "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/evolis-suite-9.4.0.33906.exe",
+      "sha256": "727b6f7b3da4c83d617616e1ef39314074d86f80eab724730a02b0d92700ced0",
+      "size": 221194784
     },
     {
       "id": "idp-smart32",

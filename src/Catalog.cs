@@ -130,6 +130,7 @@ namespace CoreDot
                         }
                     }
                     it.Open = Expand(it.Open);
+                    it.Args = Expand(it.Args);   // 예: /LOG="%ProgramData%\CoreDot\logs\..."
                     if (string.IsNullOrEmpty(it.Id) || (it.Kind != "driver" && it.Kind != "exe")) continue;
                     c.Items.Add(it);
                 }
@@ -173,10 +174,14 @@ namespace CoreDot
             return best;
         }
 
+        /// <summary>제어판 프로그램 목록에서 찾는다. name 이 '*' 로 끝나면 그 앞부분으로 시작하는 이름
+        /// (예: "Evolis Premium Suite 2*" — Evolis 는 이름에 판 번호를 붙인다).</summary>
         public static string UninstallVersion(string name)
         {
             string best = null;
             bool found = false;
+            bool prefix = name.EndsWith("*");
+            if (prefix) name = name.TrimEnd('*').Trim();
             var hives = new[] { RegistryHive.LocalMachine, RegistryHive.CurrentUser };
             foreach (var hive in hives)
             {
@@ -191,7 +196,10 @@ namespace CoreDot
                             using (var k = un.OpenSubKey(sub))
                             {
                                 var dn = k == null ? null : k.GetValue("DisplayName") as string;
-                                if (dn == null || !dn.Trim().Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+                                if (dn == null) continue;
+                                dn = dn.Trim();
+                                if (prefix ? !dn.StartsWith(name, StringComparison.OrdinalIgnoreCase)
+                                           : !dn.Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
                                 found = true;
                                 var v = k.GetValue("DisplayVersion") as string;
                                 if (!string.IsNullOrEmpty(v) && (best == null || Core.CompareVersions(v, best) > 0)) best = v;
