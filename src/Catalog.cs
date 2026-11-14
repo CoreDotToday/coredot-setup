@@ -23,6 +23,7 @@ namespace CoreDot
         public string Args;                        // exe: 조용히 설치 인자
         public string Detect;                      // exe: 제어판 프로그램 목록의 이름
         public string Open;                        // exe: [열기] 로 띄울 파일
+        public List<int> RebootCodes = new List<int>();   // exe: '설치됨 · 재부팅 필요' 로 볼 종료 코드 (예: Evolis 500)
         public List<Tool> Tools = new List<Tool>();
     }
 
@@ -119,6 +120,8 @@ namespace CoreDot
                         foreach (object p in pr) if (p != null) list.Add(p.ToString());
                         it.Printers = list.ToArray();
                     }
+                    var rc = d.ContainsKey("rebootCodes") ? d["rebootCodes"] as IEnumerable : null;
+                    if (rc != null) foreach (object x2 in rc) { try { it.RebootCodes.Add(Convert.ToInt32(x2)); } catch { } }
                     var tools = d.ContainsKey("tools") ? d["tools"] as IEnumerable : null;
                     if (tools != null)
                     {

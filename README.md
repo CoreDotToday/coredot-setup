@@ -51,6 +51,8 @@ powershell -ExecutionPolicy Bypass -File tools\publish-packages.ps1 -Upload
   "source": "extras/LogiTuneInstall.exe",
   "args": "/quiet /norestart",            // 창 없이 설치하는 인자 (설치 파일 종류마다 다름)
   "detect": "Logi Tune",                  // 제어판 프로그램 목록에 보이는 이름 (설치 여부 · 판 확인)
+                                          //  끝에 * 를 붙이면 그 앞부분으로 시작하는 이름 (예: "Evolis Premium Suite 2*")
+  "rebootCodes": [500],                   // (선택) '설치됨 · 재부팅 필요' 로 볼 종료 코드 — 3010 · 1641 은 기본
   "open": "%ProgramFiles%\\Logitech\\LogiTune\\LogiTune.exe" }
 
 { "id": "epson-l8050", "name": "Epson L8050", "kind": "driver",

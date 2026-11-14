@@ -92,8 +92,18 @@ namespace CoreDot
             {
                 Say(it.Id, "installing", "설치 중");
                 int code = Run(file, it.Args, 30 * 60 * 1000);
-                if (code == 3010 || code == 1641) NeedReboot = true;
-                else if (code != 0 && code != 1638) throw new Exception("설치 실패 (코드 " + code + ")");
+                if (code == 3010 || code == 1641 || it.RebootCodes.Contains(code)) NeedReboot = true;
+                else if (code != 0 && code != 1638)
+                {
+                    // 제조사마다 '끝났지만 재부팅 필요' 를 제 나름의 코드로 알린다 — 실제로 그 판이 깔렸으면 성공으로 본다
+                    string have = Catalog.InstalledVersion(it);
+                    if (have != null && have != "설치됨" && Core.CompareVersions(have, it.Version) >= 0)
+                    {
+                        Core.Log("[" + it.Id + "] 종료 코드 " + code + " 이지만 " + have + " 가 설치됨 — 성공 (재부팅 권장)");
+                        NeedReboot = true;
+                    }
+                    else throw new Exception("설치 실패 (코드 " + code + ")");
+                }
             }
             Say(it.Id, "done", it.Version + " 설치 완료");
         }
