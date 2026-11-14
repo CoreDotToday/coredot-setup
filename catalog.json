@@ -59,7 +59,7 @@
       "name": "Evolis Premium Suite 2",
       "kind": "exe",
       "source": "extras/EvolisPremiumSuite2.exe",
-      "args": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /LOG=\"%ProgramData%\\CoreDot\\logs\\evolis-suite-install.log\"",
+      "args": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /LOG=\"C:\\ProgramData\\CoreDot\\logs\\evolis-suite-install.log\"",
       "detect": "Evolis Premium Suite 2*",
       "open": "%ProgramFiles%\\Evolis Card Printer 2\\Evolis Premium Suite 2\\bin\\evomanager.exe",
       "version": "9.4.0.33906",
