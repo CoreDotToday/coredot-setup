@@ -1,9 +1,9 @@
 {
   "manager": {
-    "version": "1.0.5",
-    "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/v1.0.5/CoreDotSetup.exe",
-    "sha256": "6f14fd413db941db7efff3f62bd48feb7288d0b25341674cc9fb3588e7d938b7",
-    "size": 78336
+    "version": "1.0.6",
+    "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/v1.0.6/CoreDotSetup.exe",
+    "sha256": "b525eaca0510deed76fd38d6238e782a89a771356482e642456f6e768d32cac6",
+    "size": 103424
   },
   "items": [
     {
