@@ -19,9 +19,27 @@ namespace CoreDot
         public string Inf, Manufacturer;
     }
 
+    /// <summary>로그인할 때 켜 둘 프로그램 (HKLM Run). 예: IDP 드라이버가 System32 에 넣는 상태 감시 Watchman.exe</summary>
+    public class Autostart
+    {
+        public string Name, Path, Args;
+        public string StartupLink;   // (선택) 제조사 설치 프로그램이 사용자 '시작 프로그램' 폴더에 만드는 바로 가기 이름 — HKLM Run 과 겹쳐 두 번 켜지지 않게 지운다
+        public string Command { get { return "\"" + Path + "\"" + (string.IsNullOrEmpty(Args) ? "" : " " + Args); } }
+    }
+
+    /// <summary>설치 프로그램이 안에서 띄우는 다른 설치 프로그램 — 조용히 옵션 없이 띄워 창이 뜨면, 그 파일을 복사해 두고 창을 닫은 뒤
+    /// 조용히 옵션으로 다시 실행한다. 예: SMART Utility 설치가 띄우는 SMART_Agent-Setup.exe (/VERYSILENT 없이 실행됨)</summary>
+    public class ChildInstaller
+    {
+        public string Process, Args;
+    }
+
     public class Item
     {
+        public List<string> Requires = new List<string>();          // (선택) 이것보다 먼저 깔려 있어야 하는 항목 id (예: .NET 런타임)
+        public List<ChildInstaller> Children = new List<ChildInstaller>();
         public DriverFamily Replaces;              // exe: 처음 깔 때 먼저 지울 같은 제조사 드라이버 (예: Evolis)
+        public Autostart Autostart;                // (선택) 설치 뒤 로그인 때마다 켤 프로그램
         public string Id, Name, Kind, Version, Url, Sha256;
         public long Size;
         public string Inf;                         // driver: 드라이버 저장소의 원래 INF 이름 (예: e1wf1b0e.inf)
@@ -31,6 +49,23 @@ namespace CoreDot
         public string Open;                        // exe: [열기] 로 띄울 파일
         public List<int> RebootCodes = new List<int>();   // exe: '설치됨 · 재부팅 필요' 로 볼 종료 코드 (예: Evolis 500)
         public List<Tool> Tools = new List<Tool>();
+        public List<Tool> Restart = new List<Tool>();   // (선택) 업데이트 때 꺼졌다면 다시 켤 프로그램 — 없으면 autostart · open 을 본다
+        public List<string> Wow64 = new List<string>();
+        public Tool UninstallFirst;   // (선택) exe: 이미 깔려 있으면 설치 전에 이것으로 옛 판을 조용히 지운다 — 설치 프로그램이 옛 판 제거를
+                                      //  조용히 옵션 없이 띄워 SYSTEM 화면에서 '제거할까요?' 로 멈추는 경우 (예: SMART Utility)  // (선택) driver: System32 에 들어간 32비트 파일 중 SysWOW64 에도 둘 것 (* 가능)
+
+        /// <summary>설치 · 업데이트 전에 닫고 끝나면 다시 켤 프로그램 — restart 가 있으면 그것, 없으면 autostart · open.</summary>
+        public List<Tool> WatchedPrograms()
+        {
+            var list = new List<Tool>();
+            if (Restart.Count > 0) list.AddRange(Restart);
+            else
+            {
+                if (Autostart != null) list.Add(new Tool { Path = Autostart.Path, Args = Autostart.Args });
+                if (!string.IsNullOrEmpty(Open)) list.Add(new Tool { Path = Open, Args = "" });
+            }
+            return list;
+        }
     }
 
     public class CatalogData
@@ -88,6 +123,13 @@ namespace CoreDot
             }
         }
 
+        /// <summary>서비스 · 설치기가 마지막으로 받아 둔 목록 (사용자 쪽에서 읽기만). 없으면 null.</summary>
+        public static CatalogData LoadCached()
+        {
+            try { return File.Exists(Paths.CatalogCache) ? Parse(File.ReadAllText(Paths.CatalogCache)) : null; }
+            catch (Exception e) { Core.Log("받아 둔 목록 읽기 실패: " + e.Message); return null; }
+        }
+
         public static CatalogData Parse(string json)
         {
             var o = Core.ParseJson(json);
@@ -128,6 +170,19 @@ namespace CoreDot
                     }
                     var rp = d.ContainsKey("replaces") ? d["replaces"] as Dictionary<string, object> : null;
                     if (rp != null) it.Replaces = new DriverFamily { Inf = Core.Str(rp, "inf"), Manufacturer = Core.Str(rp, "manufacturer") };
+                    var au = d.ContainsKey("autostart") ? d["autostart"] as Dictionary<string, object> : null;
+                    if (au != null && !string.IsNullOrEmpty(Core.Str(au, "name")) && !string.IsNullOrEmpty(Core.Str(au, "path")))
+                        it.Autostart = new Autostart { Name = Core.Str(au, "name"), Path = Expand(Core.Str(au, "path")), Args = Core.Str(au, "args") ?? "", StartupLink = Core.Str(au, "startupLink") };
+                    var rq = d.ContainsKey("requires") ? d["requires"] as IEnumerable : null;
+                    if (rq != null) foreach (object r in rq) if (r != null) it.Requires.Add(r.ToString());
+                    var ch = d.ContainsKey("children") ? d["children"] as IEnumerable : null;
+                    if (ch != null)
+                        foreach (object x3 in ch)
+                        {
+                            var cd = x3 as Dictionary<string, object>;
+                            if (cd == null || string.IsNullOrEmpty(Core.Str(cd, "process"))) continue;
+                            it.Children.Add(new ChildInstaller { Process = Core.Str(cd, "process"), Args = Expand(Core.Str(cd, "args") ?? "") });
+                        }
                     var rc = d.ContainsKey("rebootCodes") ? d["rebootCodes"] as IEnumerable : null;
                     if (rc != null) foreach (object x2 in rc) { try { it.RebootCodes.Add(Convert.ToInt32(x2)); } catch { } }
                     var tools = d.ContainsKey("tools") ? d["tools"] as IEnumerable : null;
@@ -140,8 +195,24 @@ namespace CoreDot
                             it.Tools.Add(new Tool { Label = Core.Str(td, "label"), Path = Expand(Core.Str(td, "path")), Args = Core.Str(td, "args") ?? "" });
                         }
                     }
+                    var uf = d.ContainsKey("uninstallFirst") ? d["uninstallFirst"] as Dictionary<string, object> : null;
+                    if (uf != null && !string.IsNullOrEmpty(Core.Str(uf, "path")))
+                        it.UninstallFirst = new Tool { Path = Expand(Core.Str(uf, "path")), Args = Core.Str(uf, "args") ?? "" };
+                    var w6 = d.ContainsKey("wow64") ? d["wow64"] as IEnumerable : null;
+                    if (w6 != null) foreach (object w in w6) if (w != null && w.ToString().Length > 0) it.Wow64.Add(w.ToString());
+                    var rs = d.ContainsKey("restart") ? d["restart"] as IEnumerable : null;
+                    if (rs != null)
+                        foreach (object t in rs)
+                        {
+                            var td = t as Dictionary<string, object>;
+                            if (td == null || string.IsNullOrEmpty(Core.Str(td, "path"))) continue;
+                            it.Restart.Add(new Tool { Path = Expand(Core.Str(td, "path")), Args = Core.Str(td, "args") ?? "" });
+                        }
                     it.Open = Expand(it.Open);
                     it.Args = Expand(it.Args);   // 예: /LOG="%ProgramData%\CoreDot\logs\..."
+                    // "app" = exe 와 같다. 1.0.5 이하는 driver · exe 만 읽으므로 'app' 항목은 옛 관리센터에 보이지 않는다
+                    // (requires · children 같은 새 기능이 필요한 항목을 옛 판이 잘못 까는 일이 없게)
+                    if (it.Kind == "app") it.Kind = "exe";
                     if (string.IsNullOrEmpty(it.Id) || (it.Kind != "driver" && it.Kind != "exe")) continue;
                     c.Items.Add(it);
                 }
@@ -191,9 +262,10 @@ namespace CoreDot
         {
             string best = null;
             bool found = false;
-            bool prefix = name.EndsWith("*");
-            if (prefix) name = name.TrimEnd('*').Trim();
-            var hives = new[] { RegistryHive.LocalMachine, RegistryHive.CurrentUser };
+            // * 는 아무 글자나 (예: "Microsoft Windows Desktop Runtime - 9.* (x64)")
+            var rx = new Regex("^" + Regex.Escape(name.Trim()).Replace("\\*", ".*") + "$", RegexOptions.IgnoreCase);
+            // HKLM 만 본다 — 자동 확인(사용자)과 서비스(SYSTEM)는 HKCU 가 서로 달라, HKCU 로 판단하면 둘이 다르게 본다
+            var hives = new[] { RegistryHive.LocalMachine };
             foreach (var hive in hives)
             {
                 foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
@@ -208,9 +280,11 @@ namespace CoreDot
                             {
                                 var dn = k == null ? null : k.GetValue("DisplayName") as string;
                                 if (dn == null) continue;
+                                // 제어판에 안 보이는 하위 항목은 뺀다 — 예: .NET 런타임은 묶음(9.0.23.36622) 아래 MSI 들이 72.92.x 같은
+                                // 내부 판 번호로 따로 적혀 있어, 그것을 읽으면 판 비교가 틀린다
+                                if (k.GetValue("SystemComponent") is int && (int)k.GetValue("SystemComponent") == 1) continue;
                                 dn = dn.Trim();
-                                if (prefix ? !dn.StartsWith(name, StringComparison.OrdinalIgnoreCase)
-                                           : !dn.Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+                                if (!rx.IsMatch(dn)) continue;
                                 found = true;
                                 var v = k.GetValue("DisplayVersion") as string;
                                 if (!string.IsNullOrEmpty(v) && (best == null || Core.CompareVersions(v, best) > 0)) best = v;
@@ -282,6 +356,33 @@ namespace CoreDot
             catch (Exception e) { Core.Log("USB 포트 확인 실패: " + e.Message); return null; }
         }
 
+        /// <summary>최근 10분 안에 들어온 인쇄 작업 수 (자동 업데이트는 인쇄 중이면 다음으로 미룬다). 못 읽으면 0.
+        /// 오래된 작업은 세지 않는다 — 프린터가 꺼져 있어 몇 주째 걸려 있는 작업 때문에 업데이트가 영영 밀리지 않게.</summary>
+        public static int PrintJobs()
+        {
+            try
+            {
+                int n = 0;
+                var since = DateTime.Now.AddMinutes(-10);
+                using (var s = new ManagementObjectSearcher("SELECT TimeSubmitted FROM Win32_PrintJob"))
+                using (var r = s.Get())
+                {
+                    foreach (ManagementObject o in r)
+                    {
+                        using (o)
+                        {
+                            var ts = o["TimeSubmitted"] as string;
+                            DateTime t;
+                            try { t = ManagementDateTimeConverter.ToDateTime(ts); } catch { t = DateTime.Now; }   // 시각을 못 읽으면 지금 것으로 본다
+                            if (t >= since) n++;
+                        }
+                    }
+                }
+                return n;
+            }
+            catch (Exception e) { Core.Log("인쇄 작업 확인 실패: " + e.Message); return 0; }
+        }
+
         // ------------------------------------------------------------ 할 일
         public class Pending
         {
@@ -289,6 +390,27 @@ namespace CoreDot
             public string Title;
             public string From, To;  // From == null 이면 새로 추가
             public bool IsNew { get { return From == null; } }
+        }
+
+        /// <summary>깔려 있는 항목이 requires 로 적은 것 중 빠진 것 (예: SMART Utility 는 깔렸는데 .NET 9 가 없음).
+        /// 이것이 없으면 깔린 프로그램이 제대로 안 돌아 (.NET 설치하라는 창이 계속 뜬다) — 묻지 않고 채운다.</summary>
+        public static List<Pending> MissingRequires(CatalogData cat)
+        {
+            var list = new List<Pending>();
+            if (cat == null) return list;
+            var added = new HashSet<string>();
+            foreach (var it in cat.Items)
+            {
+                if (it.Requires.Count == 0 || InstalledVersion(it) == null) continue;
+                foreach (var rid in it.Requires)
+                {
+                    var r = cat.Find(rid);
+                    if (r == null || string.IsNullOrEmpty(r.Url) || added.Contains(r.Id) || InstalledVersion(r) != null) continue;
+                    added.Add(r.Id);
+                    list.Add(new Pending { Id = r.Id, Title = r.Name + " (" + it.Name + " 에 필요)", To = r.Version });
+                }
+            }
+            return list;
         }
 
         public static List<Pending> ComputePending(CatalogData cat, ReleaseInfo printer, string managerVersion)

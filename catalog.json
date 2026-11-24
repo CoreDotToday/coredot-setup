@@ -55,7 +55,15 @@
       "version": "9.4.0.33906",
       "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/evolis-suite-9.4.0.33906.exe",
       "sha256": "727b6f7b3da4c83d617616e1ef39314074d86f80eab724730a02b0d92700ced0",
-      "size": 221194784
+      "size": 221194784,
+      "restart": [
+        {
+          "path": "%ProgramFiles%\\Evolis Card Printer 2\\Evolis Premium Suite 2\\bin\\evonotify.exe"
+        },
+        {
+          "path": "%ProgramFiles%\\Evolis Card Printer 2\\Evolis Premium Suite 2\\bin\\evomanager.exe"
+        }
+      ]
     },
     {
       "id": "idp-smart32",
@@ -76,10 +84,73 @@
           "path": "%WINDIR%\\System32\\CleanPrinter.exe"
         }
       ],
+      "autostart": {
+        "name": "Watchman",
+        "path": "%WINDIR%\\System32\\Watchman.exe"
+      },
+      "wow64": [
+        "Watchman.exe",
+        "watch.dll",
+        "SmartComm2.dll",
+        "smart52config.ini",
+        "CardPrinterConfig.exe",
+        "CardPrinterConfig.ini",
+        "CardPrinterFirmware.exe",
+        "CardPrinterDiagnostics.exe",
+        "DrvPlugin.exe",
+        "CleanPrinter.exe",
+        "cputil.exe",
+        "CleanPrinter_SMART*.bmp",
+        "cardprinter_mask_*.bmp",
+        "cardprinter_smart52_*.prn"
+      ],
       "version": "2.26.10.20",
       "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/idp-smart32-2.26.10.20.zip",
       "sha256": "bf185821e45d1e7854c80e69a771ee50edde3c39d8b0b05a587c701a9dda8ad6",
       "size": 162169504
+    },
+    {
+      "id": "dotnet-desktop-9",
+      "name": ".NET 9 데스크톱 런타임",
+      "kind": "app",
+      "source": "extras/windowsdesktop-runtime-9.0.23-win-x64.exe",
+      "args": "/install /quiet /norestart",
+      "detect": "Microsoft Windows Desktop Runtime - 9.* (x64)",
+      "version": "9.0.23.36622",
+      "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/dotnet-desktop-9-9.0.23.36622.exe",
+      "sha256": "eefb60bd0f3fb33c0787074cebc0467ffba32bcb01088613121649fc3bdb4a27",
+      "size": 60732976
+    },
+    {
+      "id": "idp-smart-utility",
+      "name": "IDP SMART Utility",
+      "kind": "app",
+      "source": "extras/SMART_Utility-Setup-v1.0.0.4.exe",
+      "args": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /LOG=\"C:\\ProgramData\\CoreDot\\logs\\idp-smart-utility-install.log\"",
+      "detect": "SMART Utility*",
+      "uninstallFirst": {
+        "path": "%ProgramFiles%\\SMART Utility\\unins000.exe",
+        "args": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+      },
+      "requires": [
+        "dotnet-desktop-9"
+      ],
+      "children": [
+        {
+          "process": "SMART_Agent-Setup",
+          "args": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /LOG=\"C:\\ProgramData\\CoreDot\\logs\\idp-smart-agent-install.log\""
+        }
+      ],
+      "autostart": {
+        "name": "SMART Agent",
+        "path": "%ProgramFiles%\\SMART Agent\\SMART_Agent.exe",
+        "startupLink": "SMART Agent"
+      },
+      "open": "%ProgramFiles%\\SMART Utility\\SMART_Utility.exe",
+      "version": "1.0.0.4",
+      "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/idp-smart-utility-1.0.0.4.exe",
+      "sha256": "06bdd6cec1f4748d91b5a671ad3335d8de8d1dd88790e28786fca0d8403a4230",
+      "size": 127687688
     },
     {
       "id": "logitune",
@@ -92,7 +163,13 @@
       "version": "3.15.96.0",
       "url": "https://github.com/CoreDotToday/coredot-setup/releases/download/packages/logitune-3.15.96.0.exe",
       "sha256": "1f6c458558d174f8eee40507255dfb49af2e3bc3f0811a421b614282cbaa2ba1",
-      "size": 218593896
+      "size": 218593896,
+      "restart": [
+        {
+          "path": "%ProgramFiles%\\Logitech\\LogiTune\\LogiTune.exe",
+          "args": "--tray"
+        }
+      ]
     }
   ]
 }

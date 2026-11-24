@@ -5,34 +5,39 @@
 ## 새 PC 에 설치
 
 1. **[CoreDotSetup.exe 받기](https://github.com/CoreDotToday/coredot-setup/releases/latest/download/CoreDotSetup.exe)** (로그인 필요 없음)
-2. 실행 → 관리자 확인 [예] → **[설치]**
+2. 실행 → 관리자 확인 [예] → 설치할 것 고르기 → **[설치]**
    - 코드서명이 없어 처음엔 파란 경고가 뜰 수 있습니다: [추가 정보] → [실행]
 3. 끝나면 바탕 화면에 **코어닷 관리센터** · **코어닷프린터** 가 생깁니다. 프린터 USB 는 설치 후에 꽂아도 됩니다.
 
-설치되는 것 — [`catalog.json`](catalog.json) 에 적힌 전부:
+설치할 수 있는 것 — [`catalog.json`](catalog.json) 에 적힌 것 중 고른 것 (처음엔 전부 체크):
 
 | 항목 | 종류 |
 |---|---|
 | Epson L8050 · L18050 | 프린터 드라이버 |
 | Evolis 카드 프린터 (Agilia 등) | 프린터 드라이버 |
-| IDP SMART-32 | 프린터 드라이버 |
+| IDP SMART-32 | 프린터 드라이버 (상태 감시 Watchman 자동 실행) |
+| .NET 9 데스크톱 런타임 | SMART Agent 실행에 필요 (SMART Utility 를 고르면 저절로 먼저 설치) |
+| IDP SMART Utility | IDP 카드 프린터 관리 프로그램 + SMART Agent (자동 실행) |
 | Logi Tune | 로지텍 카메라 · 헤드셋 프로그램 |
 | 코어닷프린터 | [coredot-printer-v2](https://github.com/CoreDotToday/coredot-printer-v2) 최신 릴리스 |
 
-Windows 10 / 11 64비트, 인터넷 필요. 창 없이 설치: `CoreDotSetup.exe --setup /silent`
+Windows 10 / 11 64비트, 인터넷 필요. 창 없이 설치: `CoreDotSetup.exe --setup /silent` (전부) · `--setup /silent /items:idp-smart32,coredotprinter` (적은 것만 — id 는 catalog.json, 코어닷프린터는 `coredotprinter`)
 
 ## 설치 후: 코어닷 관리센터
 
 - **한 창에서 관리**: 항목마다 설치된 판 · 프린터 연결 상태 · [열기] [인쇄 설정] [다시 설치] · 제조사 도구 버튼
-- **자동 알림**: 로그인 2분 뒤 · 3시간마다 확인해서 새 버전이나 **새로 추가된 프로그램** 이 있으면 알림 창 → [지금 설치]
+- **자동 업데이트**: 로그인 2분 뒤 · 3시간마다 확인해서 **설치되어 있는 것만** 묻지 않고 새 버전으로 바꿉니다 (알림 창 없음)
+  - 최근 10분 안에 들어온 인쇄 작업이 있으면 다음 확인 때로 미룹니다
+  - 항목마다 자동 업데이트 · 알림만 · 업데이트 안 함 을 고릅니다. 알림 창은 하루에 한 번만 뜹니다
+  - 설치 안 한 것 · 목록에 새로 추가된 것은 알리지 않습니다 — 관리센터 창에서 [설치] 하면 그때부터 자동 업데이트 대상
 - **관리자 확인 없이 설치**: 설치는 SYSTEM 권한의 작업(`\CoreDot\Installer`)이 합니다
-- **스스로 업데이트**: 관리센터 새 판도 같은 알림으로 바뀝니다
+- **스스로 업데이트**: 관리센터 새 판도 같은 방식으로 저절로 바뀝니다
 - 문제 해결: 인쇄 대기열 비우기 · 프린터 설정 · 로그 폴더
 - 제거: 제어판 › 프로그램 › **코어닷 관리센터** (드라이버 · 프로그램 · 코어닷프린터는 남김)
 
 ## 프로그램 추가 · 업데이트 (관리자용)
 
-모든 PC 는 `main` 브랜치의 **`catalog.json`** 을 봅니다. 이 파일을 바꿔 푸시하면 3시간 안에 모든 키오스크에 알림이 뜹니다.
+모든 PC 는 `main` 브랜치의 **`catalog.json`** 을 봅니다. 이 파일을 바꿔 푸시하면 3시간 안에 그 항목이 깔린 키오스크가 저절로 업데이트합니다 (새로 추가한 항목은 각 PC 에서 직접 설치해야 깔립니다).
 
 ```powershell
 # 1) 설치 파일 넣기 (git 에는 안 올라감)
@@ -47,19 +52,32 @@ powershell -ExecutionPolicy Bypass -File tools\publish-packages.ps1 -Upload
 `catalog.json` 항목 예시:
 
 ```json
-{ "id": "logitune", "name": "Logi Tune", "kind": "exe",
+{ "id": "logitune", "name": "Logi Tune", "kind": "exe",   // "app" 은 exe 와 같지만 관리센터 1.0.5 이하에는 안 보임
+                                                         //  (아래 1.0.6+ 기능이 꼭 필요한 항목은 app 으로 — 옛 판이 잘못 깔지 않게)
   "source": "extras/LogiTuneInstall.exe",
   "args": "/quiet /norestart",            // 창 없이 설치하는 인자 (설치 파일 종류마다 다름)
-  "detect": "Logi Tune",                  // 제어판 프로그램 목록에 보이는 이름 (설치 여부 · 판 확인)
-                                          //  끝에 * 를 붙이면 그 앞부분으로 시작하는 이름 (예: "Evolis Premium Suite 2*")
+  "detect": "Logi Tune",                  // 제어판 프로그램 목록(HKLM, 숨은 항목 제외)에 보이는 이름 (설치 여부 · 판 확인)
+                                          //  * 는 아무 글자나 (예: "Evolis Premium Suite 2*", "Microsoft Windows Desktop Runtime - 9.* (x64)")
+  "uninstallFirst": { "path": "...\\unins000.exe", "args": "/VERYSILENT" },  // (선택) 깔려 있으면 설치 전에 옛 판을 조용히 지움 —
+                                          //  설치 프로그램이 옛 판 제거 창을 띄워 멈추는 경우 (예: SMART Utility) (관리센터 1.0.6+)
   "rebootCodes": [500],                   // (선택) '설치됨 · 재부팅 필요' 로 볼 종료 코드 — 3010 · 1641 은 기본
+  "requires": ["dotnet-desktop-9"],       // (선택) 먼저 깔려 있어야 하는 항목 id — 없으면 저절로 먼저 설치 (관리센터 1.0.6+)
+  "children": [{ "process": "SMART_Agent-Setup",   // (선택) 설치 프로그램이 조용히 옵션 없이 띄우는 하위 설치 프로그램 —
+                 "args": "/VERYSILENT ..." }],     //  뜨면 복사해 두고 창을 닫은 뒤 이 인자로 다시 실행 (관리센터 1.0.6+)
+  "autostart": { "name": "SMART Agent", "path": "...",
+                 "startupLink": "SMART Agent" },   // (선택) 사용자 '시작 프로그램' 폴더의 이 바로 가기는 지움 (HKLM Run 과 겹치지 않게)
   "open": "%ProgramFiles%\\Logitech\\LogiTune\\LogiTune.exe" }
 
 { "id": "epson-l8050", "name": "Epson L8050", "kind": "driver",
   "source": "drivers/epson-l8050",
   "inf": "e1wf1b0e.inf",                  // 드라이버 저장소에서 판을 찾을 INF 이름
   "printers": ["EPSON L8050 Series"],     // 인쇄 드라이버 이름 (상태 표시 · 인쇄 설정 버튼)
-  "tools": [{ "label": "도구", "path": "..." }] }
+  "tools": [{ "label": "도구", "path": "..." }],
+  "autostart": { "name": "Watchman",       // (선택) 로그인 때 켤 프로그램 — HKLM Run 에 적고, 설치 직후 사용자 화면에도 켬
+                 "path": "%WINDIR%\\System32\\Watchman.exe" },    //  파일이 없으면 건너뜀 · 설치할 때마다 다시 맞춤 (관리센터 1.0.6+)
+  "wow64": ["Watchman.exe", "watch.dll", "cardprinter_*.prn"],      // (선택) System32 에 들어간 32비트 파일을 SysWOW64 에도 복사 —
+                                                                     //  32비트 도구가 "watch.dll 이 없어서…" 로 멈추지 않게 (* 가능)
+  "restart": [{ "path": "...", "args": "--tray" }] }                // (선택) 업데이트 전에 닫고 끝나면 다시 켤 프로그램 (없으면 autostart · open)
 ```
 
 `version` · `url` · `sha256` · `size` 는 `publish-packages.ps1` 이 채웁니다. 관리센터는 **SHA256 이 맞는 파일만** 설치합니다.
@@ -76,10 +94,10 @@ git commit catalog.json; git push   # → 모든 PC 의 관리센터가 새 판�
 
 ```
 src\Program.cs     하나의 exe: 받은 자리에서 실행 = 설치, 설치된 자리에서 실행 = 관리센터,
-                   --check = 알림, --service = 백그라운드 설치(SYSTEM), --uninstall = 제거
+                   --check = 자동 업데이트, --service = 백그라운드 설치(SYSTEM), --uninstall = 제거
 src\Catalog.cs     catalog.json · 설치된 판 찾기 · 할 일 계산
 src\Engine.cs      다운로드 · 검증 · 드라이버(pnputil) · 프로그램 설치, SYSTEM 서비스
-src\ManagerUI.cs   관리센터 창 · 알림 창 · 진행 창
+src\ManagerUI.cs   관리센터 창 · 진행 창 · 설치/업데이트 공용(Updater)
 src\SetupMode.cs   첫 설치 · 작업 스케줄러 · 바로 가기 · 제어판 · 예전 코어닷프린터 자리에서 옮겨 오기 · 제거
 src\Common.cs      공용 (로그 · HTTP · 해시 · 코어닷프린터 업데이트)
 build.ps1          → dist\CoreDotSetup.exe (윈도우 기본 .NET Framework 4 csc, 설치할 것 없음)

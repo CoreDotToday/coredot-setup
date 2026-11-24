@@ -17,6 +17,10 @@ namespace CoreDot
     class SetupStep
     {
         public string Title;
+        public string Id;                 // 고를 수 있는 단계: catalog id 또는 "coredotprinter"
+        public bool Optional;             // true 면 설치 창에 체크 상자 (관리센터 · 등록은 늘 한다)
+        public bool Selected = true;
+        public string Mode = Prefs.Auto;  // 업데이트 방식 (자동 · 알림만 · 안 함) — 설치하면 prefs 에 저장
         public Action<SetupStep> Run;
         public bool Ok;
         public string Result = "";
@@ -54,7 +58,8 @@ namespace CoreDot
         }
 
         // ================================================================ 설치
-        public static int Run(bool silent)
+        /// <param name="only">고른 항목 id (null 이면 전부). 창에서는 처음 체크 상태, /silent 에서는 설치할 것.</param>
+        public static int Run(bool silent, HashSet<string> only = null)
         {
             EnsureDataDir();   // 로그를 쓰기 전에 — 폴더 권한부터
             Core.LogFile = Path.Combine(Paths.DataDir, @"logs\install.log");
@@ -78,9 +83,10 @@ namespace CoreDot
             }
             if (splash != null) splash.Close();
 
-            var steps = BuildSteps(cat);
+            var steps = BuildSteps(cat, only);
             if (silent)
             {
+                SavePrefs(steps);
                 bool all = RunSteps(steps, null);
                 LaunchAfter(true);
                 return !all ? 1 : NeedReboot ? 3010 : 0;
@@ -89,8 +95,17 @@ namespace CoreDot
             return 0;
         }
 
-        static List<SetupStep> BuildSteps(CatalogData cat)
+        /// <summary>고른 항목의 업데이트 방식을 저장한다 (설치 시작할 때).</summary>
+        public static void SavePrefs(List<SetupStep> steps)
         {
+            var d = new Dictionary<string, string>();
+            foreach (var s in steps) if (s.Optional && s.Selected && s.Id != null) d[s.Id] = s.Mode;
+            if (d.Count > 0) Prefs.SetMany(d);
+        }
+
+        static List<SetupStep> BuildSteps(CatalogData cat, HashSet<string> only)
+        {
+            var saved = Prefs.Load();
             var steps = new List<SetupStep>();
             steps.Add(new SetupStep { Title = "코어닷 관리센터", Run = delegate(SetupStep s) { InstallManagerFiles(); s.Result = Program.Version + " 설치"; } });
             var engine = new Engine();
@@ -99,6 +114,11 @@ namespace CoreDot
                 var item = it;
                 steps.Add(new SetupStep
                 {
+                    Id = item.Id,
+                    Optional = true,
+                    Mode = saved.ContainsKey(item.Id) ? saved[item.Id] : Prefs.Auto,
+                    // 이미 깔린 것은 늘 체크 (빼도 지우지는 않는다 — 깔린 것은 어차피 자동 업데이트 대상)
+                    Selected = only == null || only.Contains(item.Id) || Catalog.InstalledVersion(item) != null,
                     Title = item.Name + (item.Kind == "driver" ? " 드라이버" : ""),
                     Run = delegate(SetupStep s)
                     {
@@ -106,16 +126,20 @@ namespace CoreDot
                         if (have != null && (have == "설치됨" || Core.CompareVersions(have, item.Version) >= 0))
                         {
                             s.Result = "이미 설치됨 (" + have + ")";
+                            engine.InstallMissingRequires(cat, item);
+                            Engine.EnsureExtras(item);
                             return;
                         }
                         engine.Report = delegate(string id, string st, string msg) { if (s.Progress != null) s.Progress(msg); };
-                        engine.InstallItem(item);
+                        engine.InstallWithRequires(cat, item);
                         if (engine.NeedReboot) NeedReboot = true;
                         s.Result = item.Version + " 설치";
                     }
                 });
             }
-            steps.Add(new SetupStep { Title = "코어닷프린터", Run = InstallPrinterApp });
+            steps.Add(new SetupStep { Title = "코어닷프린터", Id = "coredotprinter", Optional = true,
+                Mode = saved.ContainsKey("coredotprinter") ? saved["coredotprinter"] : Prefs.Auto,
+                Selected = only == null || only.Contains("coredotprinter") || Core.InstalledVersion() != null, Run = InstallPrinterApp });
             steps.Add(new SetupStep { Title = "자동 확인 · 바로 가기 · 제어판 등록", Run = delegate(SetupStep s) { RegisterAll(); } });
             return steps;
         }
@@ -127,6 +151,14 @@ namespace CoreDot
             {
                 var s = steps[i];
                 int idx = i;
+                if (!s.Selected)
+                {
+                    s.Ok = true;
+                    s.Result = "건너뜀";
+                    if (report != null) report(i, "— 건너뜀 (관리센터 창에서 언제든 설치)");
+                    Core.Log("---- " + s.Title + " — 고르지 않아 건너뜀");
+                    continue;
+                }
                 s.Progress = delegate(string m) { if (report != null) report(idx, "… " + m); };
                 if (report != null) report(i, "… 설치 중");
                 Core.Log("---- " + s.Title);
@@ -160,6 +192,7 @@ namespace CoreDot
                     Core.StartApp(true);
                 }
                 if (File.Exists(Paths.ManagerExe)) Process.Start("explorer.exe", "\"" + Paths.ManagerExe + "\"");
+                Engine.StartAutostarts(Catalog.LoadCached(), true);
             }
             catch (Exception e) { Core.Log("실행 실패: " + e.Message); }
         }
@@ -187,6 +220,8 @@ namespace CoreDot
                 Directory.CreateDirectory(Paths.Requests);
                 Directory.CreateDirectory(Path.GetDirectoryName(Paths.ServiceLog));
                 Engine.Run(icacls, "\"" + Paths.Requests + "\" /grant *S-1-5-32-545:(OI)(CI)M /C /Q", 60000);
+                Directory.CreateDirectory(Prefs.Dir);   // 항목별 업데이트 방식 — 관리센터 창(사용자 권한)에서 바꾼다
+                Engine.Run(icacls, "\"" + Prefs.Dir + "\" /grant *S-1-5-32-545:(OI)(CI)M /C /Q", 60000);
             }
             catch (Exception e) { Core.Log("ProgramData 권한 설정 실패: " + e.Message); }
         }
@@ -234,7 +269,7 @@ namespace CoreDot
             string xml =
 "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n" +
 "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n" +
-"  <RegistrationInfo><Description>코어닷 관리센터 — 새 버전 · 새 프로그램 확인 (있으면 알림 창)</Description></RegistrationInfo>\r\n" +
+"  <RegistrationInfo><Description>코어닷 관리센터 — 깔린 것 자동 업데이트 (로그인 때 · 3시간마다)</Description></RegistrationInfo>\r\n" +
 "  <Triggers>\r\n" +
 "    <LogonTrigger><Enabled>true</Enabled><Delay>PT2M</Delay></LogonTrigger>\r\n" +
 "    <TimeTrigger><Repetition><Interval>PT3H</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>\r\n" +
@@ -501,6 +536,8 @@ namespace CoreDot
     {
         readonly List<SetupStep> steps;
         readonly Label[] states;
+        readonly CheckBox[] picks;
+        readonly ComboBox[] modes;
         readonly Label head;
         readonly Button go, close;
         readonly ProgressBar bar;
@@ -516,36 +553,58 @@ namespace CoreDot
             StartPosition = FormStartPosition.CenterScreen;
 
             head = new Label();
-            head.Text = "키오스크에 필요한 드라이버 · 프로그램을 한 번에 설치합니다";
+            head.Text = "설치할 드라이버 · 프로그램을 고르세요";
             head.Font = UI.Title;
-            head.SetBounds(20, 14, 620, 28);
+            head.SetBounds(20, 14, 700, 28);
             Controls.Add(head);
             var sub = new Label();
-            sub.Text = "설치가 끝나면 '코어닷 관리센터' 가 새 버전 · 새 프로그램을 알아서 확인합니다. 프린터 USB 는 설치 후에 꽂아도 됩니다.";
+            sub.Text = "설치할 것과 업데이트 방식(자동 · 알림만 · 안 함)을 고르세요. 관리센터는 늘 자동 업데이트됩니다. 고르지 않은 것은 알리지 않으며, 나중에 관리센터 창에서 설치 · 변경할 수 있습니다.";
             sub.ForeColor = UI.Muted;
             sub.Font = UI.Small;
-            sub.SetBounds(20, 44, 620, 38);
+            sub.SetBounds(20, 44, 700, 38);
             Controls.Add(sub);
 
             states = new Label[steps.Count];
+            picks = new CheckBox[steps.Count];
+            modes = new ComboBox[steps.Count];
             int y = 90;
             for (int i = 0; i < steps.Count; i++)
             {
-                var n = new Label();
-                n.Text = steps[i].Title;
-                n.SetBounds(24, y, 250, 24);
-                n.AutoEllipsis = true;
-                Controls.Add(n);
+                var step = steps[i];
+                if (step.Optional)
+                {
+                    var c = new CheckBox();
+                    c.Text = step.Title;
+                    c.Checked = step.Selected;
+                    c.AutoEllipsis = true;
+                    c.SetBounds(20, y, 254, 24);
+                    var mb = UI.ModeBox(step.Mode, delegate(string m) { step.Mode = m; });
+                    mb.SetBounds(278, y - 1, 130, 24);
+                    mb.Enabled = step.Selected;
+                    c.CheckedChanged += delegate { step.Selected = c.Checked; mb.Enabled = c.Checked; };
+                    Controls.Add(c);
+                    Controls.Add(mb);
+                    picks[i] = c;
+                    modes[i] = mb;
+                }
+                else
+                {
+                    var n = new Label();
+                    n.Text = step.Title;
+                    n.SetBounds(24, y, 250, 24);
+                    n.AutoEllipsis = true;
+                    Controls.Add(n);
+                }
                 var s = new Label();
                 s.ForeColor = UI.Muted;
-                s.SetBounds(280, y, 360, 24);
+                s.SetBounds(418, y, 300, 24);
                 s.AutoEllipsis = true;
                 Controls.Add(s);
                 states[i] = s;
                 y += 28;
             }
             bar = new ProgressBar();
-            bar.SetBounds(20, y + 10, 620, 14);
+            bar.SetBounds(20, y + 10, 700, 14);
             bar.Maximum = steps.Count;
             Controls.Add(bar);
 
@@ -554,12 +613,12 @@ namespace CoreDot
             close = UI.Btn("닫기", delegate { Close(); });
             var flow = new FlowLayoutPanel();
             flow.FlowDirection = FlowDirection.RightToLeft;
-            flow.SetBounds(20, y + 36, 620, 40);
+            flow.SetBounds(20, y + 36, 700, 40);
             flow.Controls.Add(close);
             flow.Controls.Add(go);
             Controls.Add(flow);
             AcceptButton = go;
-            ClientSize = new Size(660, y + 86);
+            ClientSize = new Size(740, y + 86);
             FormClosing += delegate(object o, FormClosingEventArgs e) { if (running) e.Cancel = true; };
         }
 
@@ -567,6 +626,9 @@ namespace CoreDot
         {
             running = true;
             go.Enabled = false; close.Enabled = false;
+            foreach (var c in picks) if (c != null) c.Enabled = false;
+            foreach (var c in modes) if (c != null) c.Enabled = false;
+            SetupMode.SavePrefs(steps);
             head.Text = "설치하는 중입니다… 창을 닫지 마세요";
             head.ForeColor = SystemColors.ControlText;
             var t = new Thread(delegate()
@@ -577,7 +639,7 @@ namespace CoreDot
                     {
                         states[i].Text = msg;
                         states[i].ForeColor = msg.StartsWith("✘") ? UI.Bad : msg.StartsWith("✔") ? UI.Ok : UI.Muted;
-                        if (msg.StartsWith("✔") || msg.StartsWith("✘")) bar.Value = Math.Min(bar.Maximum, i + 1);
+                        if (msg.StartsWith("✔") || msg.StartsWith("✘") || msg.StartsWith("—")) bar.Value = Math.Min(bar.Maximum, i + 1);
                     });
                 });
                 SetupMode.LaunchAfter(true);
@@ -597,6 +659,8 @@ namespace CoreDot
                         head.ForeColor = UI.Bad;
                         go.Text = "다시 시도";
                         go.Enabled = true;
+                        foreach (var c in picks) if (c != null) c.Enabled = true;
+                        for (int k = 0; k < modes.Length; k++) if (modes[k] != null) modes[k].Enabled = picks[k].Checked;
                     }
                 });
             });

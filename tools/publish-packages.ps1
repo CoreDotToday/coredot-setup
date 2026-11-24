@@ -1,7 +1,7 @@
 ﻿# 드라이버 · 프로그램 설치 파일을 묶어 Releases('packages')에 올리고 catalog.json 을 채운다.
 #   powershell -ExecutionPolicy Bypass -File tools\publish-packages.ps1            # 묶기 + catalog.json 채우기 (올리지는 않음)
 #   powershell -ExecutionPolicy Bypass -File tools\publish-packages.ps1 -Upload    # + GitHub 에 올리기 (gh 로그인 필요)
-# 그다음 catalog.json 을 커밋 · 푸시하면 모든 PC 의 관리센터가 3시간 안에 알림을 띄운다.
+# 그다음 catalog.json 을 커밋 · 푸시하면 그 항목이 깔린 PC 의 관리센터가 3시간 안에 저절로 업데이트한다.
 #
 # 원본 자리 (git 에는 안 올라감):
 #   drivers\<id>\   드라이버 폴더 (INF 포함)   — 드라이버가 깔린 PC 에서 tools\export-drivers.ps1 로 꺼낼 수 있음

@@ -20,6 +20,8 @@ namespace CoreDot
     {
         public Action<string, string, string> Report;   // (id, state, message) — state: downloading/installing/done/error/skipped
         public bool NeedReboot;
+        public bool SkipIfCurrent;   // 자동 업데이트 요청: 이미 그 판 이상이면 다시 깔지 않는다 (프로그램을 닫고 다시 까는 일 없게)
+        readonly HashSet<string> doneThisRun = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // requires 로 이미 깐 것
 
         void Say(string id, string state, string msg)
         {
@@ -36,7 +38,17 @@ namespace CoreDot
                 {
                     var it = cat.Find(id);
                     if (it == null) throw new Exception("목록에 없는 항목입니다: " + id);
-                    InstallItem(it);
+                    if (doneThisRun.Contains(id)) { Say(id, "done", it.Version + " 설치 완료"); return true; }
+                    if (SkipIfCurrent)
+                    {
+                        string have = Catalog.InstalledVersion(it);
+                        if (have != null && have != "설치됨" && Core.CompareVersions(have, it.Version) >= 0)
+                        {
+                            Say(id, "done", "이미 최신 (" + have + ")");
+                            return true;
+                        }
+                    }
+                    InstallWithRequires(cat, it);
                 }
                 return true;
             }
@@ -62,6 +74,39 @@ namespace CoreDot
         {
             foreach (char c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
             return s;
+        }
+
+        /// <summary>requires 에 적힌 항목 중 아직 안 깔린 것을 먼저 깔고 (그것의 requires 도 차례로) 이 항목을 깐다.</summary>
+        public void InstallWithRequires(CatalogData cat, Item it)
+        {
+            InstallWithRequires(cat, it, new HashSet<string>());
+        }
+
+        void InstallWithRequires(CatalogData cat, Item it, HashSet<string> visiting)
+        {
+            if (!visiting.Add(it.Id)) return;   // 서로를 requires 로 적은 실수 — 무한 반복 막기
+            foreach (var rid in it.Requires)
+            {
+                var r = cat == null ? null : cat.Find(rid);
+                if (r == null) { Core.Log("[" + it.Id + "] requires 의 '" + rid + "' 가 목록에 없음 — 건너뜀"); continue; }
+                if (Catalog.InstalledVersion(r) != null) continue;
+                Say(it.Id, "installing", "먼저 필요한 " + r.Name + " 설치 중");
+                InstallWithRequires(cat, r, visiting);
+            }
+            InstallItem(it);
+            doneThisRun.Add(it.Id);
+        }
+
+        /// <summary>이미 깔린 항목에 빠진 requires 만 채운다 (설치기의 '이미 설치됨' 단계).</summary>
+        public void InstallMissingRequires(CatalogData cat, Item it)
+        {
+            foreach (var rid in it.Requires)
+            {
+                var r = cat == null ? null : cat.Find(rid);
+                if (r == null || Catalog.InstalledVersion(r) != null) continue;
+                Say(it.Id, "installing", "빠진 " + r.Name + " 설치 중");
+                InstallWithRequires(cat, r);
+            }
         }
 
         public void InstallItem(Item it)
@@ -97,8 +142,12 @@ namespace CoreDot
                     Say(it.Id, "installing", "따로 깔린 드라이버 정리 중");
                     RemoveDriverFamily(it.Replaces);
                 }
+                // 켜져 있으면 파일이 잠겨 설치가 실패하고 되돌리면서 파일을 지우기까지 한다 (SMART Utility 에서 확인) — 설치 프로그램의
+                // /CLOSEAPPLICATIONS 는 SYSTEM 에서 사용자 화면의 프로그램을 못 닫는다. 먼저 닫고, 다시 켜는 것은 관리센터 쪽(Updater)이 한다.
+                StopPrograms(it);
+                UninstallOld(it);
                 Say(it.Id, "installing", "설치 중");
-                int code = Run(file, it.Args, 30 * 60 * 1000);
+                int code = it.Children.Count > 0 ? RunWithChildren(it, file) : Run(file, it.Args, 30 * 60 * 1000);
                 if (code == 3010 || code == 1641 || it.RebootCodes.Contains(code)) NeedReboot = true;
                 else if (code != 0 && code != 1638)
                 {
@@ -116,7 +165,351 @@ namespace CoreDot
                     }
                 }
             }
+            if (it.Kind != "driver") StopPrograms(it, true, null);   // SYSTEM 으로 돈 설치 프로그램이 띄운 것 (아무도 못 보는 화면) — 사용자 화면에서 다시 켠다
+            EnsureExtras(it);
             Say(it.Id, "done", it.Version + " 설치 완료");
+        }
+
+        // ------------------------------------------------------------ 로그인 때 켤 프로그램 (catalog 의 "autostart")
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+        /// <summary>설치 뒤에 맞출 것들 — SysWOW64 사본(wow64) · 자동 실행(autostart). 매번 불러도 된다.</summary>
+        public static void EnsureExtras(Item it)
+        {
+            EnsureWow64(it);
+            EnsureAutostart(it);
+        }
+
+        static string RealSystem32()
+        {
+            string win = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            return Path.Combine(win, Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess ? "Sysnative" : "System32");
+        }
+
+        static string SysWow64()
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "SysWOW64");
+        }
+
+        /// <summary>wow64 에 적힌 파일을 System32 → SysWOW64 로 복사한다 (없거나 다르면). IDP 드라이버는 32비트 도구 · DLL 을
+        /// System32(64비트 자리)에 넣는데, 32비트 프로그램이 System32 를 보면 Windows 가 SysWOW64 로 돌려 보내 watch.dll ·
+        /// SmartComm2.dll 을 못 찾는다 ("watch.dll 이 없어서 진행할 수 없습니다").</summary>
+        public static void EnsureWow64(Item it)
+        {
+            if (it == null || it.Wow64.Count == 0 || !Environment.Is64BitOperatingSystem) return;
+            string src = RealSystem32(), dst = SysWow64();
+            int copied = 0, same = 0;
+            // Watchman 등이 켜져 있으면 SysWOW64 의 watch.dll 이 잠겨 복사가 안 된다 — 바꿀 것이 있을 때만 먼저 닫는다
+            // (다시 켜는 것은 사용자 쪽 — Updater · 자동 확인이 StartAutostarts 로)
+            if (Wow64Missing(it)) StopPrograms(it, false, null);
+            foreach (var pat in it.Wow64)
+            {
+                string[] files;
+                try { files = Directory.GetFiles(src, pat); } catch (Exception e) { Core.Log("[" + it.Id + "] " + pat + " 찾기 실패: " + e.Message); continue; }
+                foreach (var f in files)
+                {
+                    string to = Path.Combine(dst, Path.GetFileName(f));
+                    try
+                    {
+                        var a = new FileInfo(f);
+                        var b = new FileInfo(to);
+                        if (b.Exists && b.Length == a.Length && b.LastWriteTimeUtc == a.LastWriteTimeUtc) { same++; continue; }
+                        CopyOver(f, to);
+                        copied++;
+                    }
+                    catch (Exception e) { Core.Log("[" + it.Id + "] SysWOW64 복사 실패 " + Path.GetFileName(f) + ": " + e.Message); }
+                }
+            }
+            if (copied > 0) Core.Log("[" + it.Id + "] 32비트 파일 SysWOW64 에 복사: " + copied + "개 (이미 같음 " + same + "개)");
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        static extern bool MoveFileEx(string from, string to, int flags);
+        const int MOVEFILE_DELAY_UNTIL_REBOOT = 4;
+
+        /// <summary>to 를 from 으로 덮어쓴다. 잠겨 있으면(어떤 프로그램이 그 DLL 을 쓰는 중) 몇 번 다시 해 보고, 그래도 안 되면
+        /// 쓰는 중인 파일의 이름을 바꿔 치우고(실행 중인 DLL 도 이름은 바꿀 수 있다) 새 파일을 넣는다 — 치운 것은 재부팅 때 지운다.</summary>
+        public static void CopyOver(string from, string to)
+        {
+            for (int i = 0; ; i++)
+            {
+                try { File.Copy(from, to, true); return; }
+                catch (IOException)
+                {
+                    if (i < 5) { Thread.Sleep(1000); continue; }
+                    if (!File.Exists(to)) throw;
+                    string aside = to + ".old-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                    File.Move(to, aside);
+                    File.Copy(from, to, true);
+                    if (!MoveFileEx(aside, null, MOVEFILE_DELAY_UNTIL_REBOOT)) Core.Log("치운 파일 재부팅 때 지우기 예약 실패: " + aside);
+                    Core.Log("쓰는 중이라 이름 바꿔 치우고 넣음: " + Path.GetFileName(to) + " (옛 것은 재부팅 때 지움)");
+                    return;
+                }
+            }
+        }
+
+        public static bool Wow64Missing(Item it)
+        {
+            if (it.Wow64.Count == 0 || !Environment.Is64BitOperatingSystem) return false;
+            string src = RealSystem32(), dst = SysWow64();
+            foreach (var pat in it.Wow64)
+            {
+                try
+                {
+                    foreach (var f in Directory.GetFiles(src, pat))
+                    {
+                        var b = new FileInfo(Path.Combine(dst, Path.GetFileName(f)));
+                        var a = new FileInfo(f);
+                        if (!b.Exists || b.Length != a.Length || b.LastWriteTimeUtc != a.LastWriteTimeUtc) return true;
+                    }
+                }
+                catch { }
+            }
+            return false;
+        }
+
+        /// <summary>HKLM Run 에 그 프로그램을 적는다 (관리자 · SYSTEM). 파일이 없으면 (드라이버가 아직 안 넣었으면) 건너뛴다.
+        /// 이미 같은 값이면 그대로 — 매번 불러도 된다.</summary>
+        public static void EnsureAutostart(Item it)
+        {
+            var a = it == null ? null : it.Autostart;
+            if (a == null) return;
+            try
+            {
+                if (!File.Exists(a.Path)) { Core.Log("[" + it.Id + "] 자동 실행 건너뜀 — 파일 없음: " + a.Path); return; }
+                using (var hk = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64))
+                using (var run = hk.CreateSubKey(RunKey))
+                {
+                    if (!string.Equals(run.GetValue(a.Name) as string, a.Command, StringComparison.OrdinalIgnoreCase))
+                    {
+                        run.SetValue(a.Name, a.Command);
+                        Core.Log("[" + it.Id + "] 자동 실행 등록: " + a.Name + " = " + a.Command);
+                    }
+                }
+                RemoveStartupLinks(it.Id, a.StartupLink);
+            }
+            catch (Exception e) { Core.Log("[" + it.Id + "] 자동 실행 등록 실패: " + e.Message); }
+        }
+
+        /// <summary>모든 사용자(+ 공용 · SYSTEM)의 '시작 프로그램' 폴더에서 그 바로 가기를 지운다 — HKLM Run 과 겹쳐 두 번 켜지지 않게.</summary>
+        static void RemoveStartupLinks(string id, string link)
+        {
+            if (string.IsNullOrEmpty(link)) return;
+            if (!link.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) link += ".lnk";
+            const string rel = @"AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup";
+            var dirs = new List<string>();
+            dirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup));
+            dirs.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"System32\config\systemprofile\" + rel));
+            try
+            {
+                string users = Path.GetDirectoryName(Environment.GetEnvironmentVariable("PUBLIC") ?? @"C:\Users\Public");
+                foreach (var u in Directory.GetDirectories(users)) dirs.Add(Path.Combine(u, rel));
+            }
+            catch (Exception e) { Core.Log("사용자 폴더 목록 실패: " + e.Message); }
+            foreach (var d in dirs)
+            {
+                string f = Path.Combine(d, link);
+                try { if (File.Exists(f)) { File.Delete(f); Core.Log("[" + id + "] 시작 프로그램 바로 가기 지움 (HKLM Run 으로 대신): " + f); } }
+                catch (Exception e) { Core.Log("[" + id + "] 바로 가기 지우기 실패 " + f + ": " + e.Message); }
+            }
+        }
+
+        /// <summary>깔려 있는데 아직 안 맞춘 것이 있나 — HKLM Run 의 자동 실행 · SysWOW64 사본 (사용자 권한으로 읽기만).</summary>
+        public static bool AutostartMissing(CatalogData cat)
+        {
+            if (cat == null) return false;
+            foreach (var it in cat.Items)
+                if (it.Wow64.Count > 0 && Catalog.InstalledVersion(it) != null && Wow64Missing(it)) return true;
+            try
+            {
+                using (var hk = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64))
+                using (var run = hk.OpenSubKey(RunKey))
+                {
+                    foreach (var it in cat.Items)
+                    {
+                        var a = it.Autostart;
+                        if (a == null || !File.Exists(a.Path) || Catalog.InstalledVersion(it) == null) continue;
+                        if (run == null || !string.Equals(run.GetValue(a.Name) as string, a.Command, StringComparison.OrdinalIgnoreCase)) return true;
+                    }
+                }
+            }
+            catch (Exception e) { Core.Log("자동 실행 확인 실패: " + e.Message); }
+            return false;
+        }
+
+        /// <summary>깔려 있는 항목 모두의 자동 실행을 맞춘다 — 그 기능이 생기기 전에 깔린 PC 도 다음 설치 때 고쳐진다.</summary>
+        public static void EnsureAutostarts(CatalogData cat)
+        {
+            if (cat == null) return;
+            foreach (var it in cat.Items)
+                if ((it.Autostart != null || it.Wow64.Count > 0) && Catalog.InstalledVersion(it) != null) EnsureExtras(it);
+        }
+
+        /// <summary>지금 로그인한 사용자 화면에 자동 실행 프로그램을 켠다 (안 켜져 있을 때만). fromElevated 면 관리자 권한을 물려주지 않게
+        /// explorer 로 띄운다. SYSTEM 서비스에서는 부르지 않는다 (사용자 화면이 없다).</summary>
+        public static void StartAutostarts(CatalogData cat, bool fromElevated)
+        {
+            if (cat == null) return;
+            int session = Process.GetCurrentProcess().SessionId;
+            foreach (var it in cat.Items)
+            {
+                var a = it.Autostart;
+                if (a == null || !File.Exists(a.Path)) continue;
+                try
+                {
+                    bool running = false;
+                    foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(a.Path)))
+                        using (p) if (p.SessionId == session) running = true;
+                    if (running) continue;
+                    if (fromElevated) Process.Start("explorer.exe", "\"" + a.Path + "\"");
+                    else
+                    {
+                        var psi = new ProcessStartInfo(a.Path, a.Args ?? "");
+                        psi.WorkingDirectory = Path.GetDirectoryName(a.Path);
+                        psi.UseShellExecute = true;
+                        Process.Start(psi);
+                    }
+                    Core.Log("[" + it.Id + "] 켬: " + a.Path);
+                }
+                catch (Exception e) { Core.Log("[" + it.Id + "] 켜기 실패: " + e.Message); }
+            }
+        }
+
+        /// <summary>설치 프로그램을 돌리면서, 그것이 조용히 옵션 없이 띄우는 하위 설치 프로그램(it.Children)을 지켜본다. 뜨면 그 exe 를
+        /// 복사해 두고 창을 닫는다(taskkill /T) — SYSTEM 으로 돌 때는 아무도 못 보는 창이라 그대로 두면 끝나지 않는다. 바깥 설치가
+        /// 끝나면 복사해 둔 것을 조용히 옵션으로 다시 실행한다. 바깥 설치의 종료 코드를 돌려준다.</summary>
+        int RunWithChildren(Item it, string file)
+        {
+            var copies = new List<KeyValuePair<ChildInstaller, string>>();
+            var stop = new ManualResetEvent(false);
+            int outerPid = 0;
+            var watcher = new Thread(delegate()
+            {
+                var seen = new HashSet<int>();
+                while (!stop.WaitOne(400))
+                {
+                    int outer = Thread.VolatileRead(ref outerPid);
+                    if (outer == 0) continue;
+                    try
+                    {
+                    foreach (var c in it.Children)
+                    {
+                        foreach (var p in Process.GetProcessesByName(c.Process))
+                        {
+                            using (p)
+                            {
+                                if (!seen.Add(p.Id)) continue;
+                                try
+                                {
+                                    // 바깥 설치 프로그램이 띄운 것(자손)만 — 이름만 같은 다른 프로세스를 SYSTEM 으로 실행하는 일이 없게
+                                    if (!IsDescendantOf(p.Id, outer)) { Core.Log("[" + it.Id + "] " + c.Process + " (PID " + p.Id + ") 는 이 설치가 띄운 것이 아님 — 무시"); continue; }
+                                    string path = ProcessPath(p.Id);
+                                    if (path == null || !File.Exists(path)) throw new Exception("실행 파일 위치를 모름");
+                                    string copy = Path.Combine(Paths.Cache, SafeName(it.Id + "-" + Path.GetFileName(path)));
+                                    File.Copy(path, copy, true);
+                                    Core.Log("[" + it.Id + "] 하위 설치 " + c.Process + " (PID " + p.Id + ") 복사: " + copy + " — 창을 닫고 나중에 조용히 다시 실행");
+                                    Run(Sys32("taskkill.exe"), "/PID " + p.Id + " /T /F", 30000);
+                                    lock (copies) copies.Add(new KeyValuePair<ChildInstaller, string>(c, copy));
+                                }
+                                catch (Exception e) { Core.Log("[" + it.Id + "] 하위 설치 " + c.Process + " 가로채기 실패: " + e.Message); }
+                            }
+                        }
+                    }
+                    }
+                    catch (Exception e) { Core.Log("[" + it.Id + "] 하위 설치 감시 오류 (계속): " + e.Message); }
+                }
+            });
+            watcher.IsBackground = true;
+            watcher.Start();
+            int code;
+            try { code = Run(file, it.Args, 30 * 60 * 1000, delegate(int pid) { Interlocked.Exchange(ref outerPid, pid); }); }
+            finally { stop.Set(); watcher.Join(60000); }
+
+            List<KeyValuePair<ChildInstaller, string>> list;
+            lock (copies) list = new List<KeyValuePair<ChildInstaller, string>>(copies);
+            foreach (var kv in list)
+            {
+                Say(it.Id, "installing", Path.GetFileNameWithoutExtension(kv.Value) + " 조용히 설치 중");
+                int cc = Run(kv.Value, kv.Key.Args, 30 * 60 * 1000);
+                if (cc == 3010 || cc == 1641 || it.RebootCodes.Contains(cc)) NeedReboot = true;
+                else if (cc != 0)
+                {
+                    string why = ReasonFromLog(kv.Key.Args);
+                    throw new Exception(kv.Key.Process + " 설치 실패 (코드 " + cc + ")" + (why != null ? " — " + why : ""));
+                }
+            }
+            return code;
+        }
+
+        void StopPrograms(Item it)
+        {
+            StopPrograms(it, false, delegate(string m) { Say(it.Id, "installing", m); });
+        }
+
+        /// <summary>그 항목의 프로그램(WatchedPrograms)이 켜져 있으면 닫는다 — 실행 파일 경로가 정확히 같은 것만 (경로를 모르면 건너뜀).
+        /// session0Only 면 SYSTEM 화면(세션 0)에 남은 것만.</summary>
+        static void StopPrograms(Item it, bool session0Only, Action<string> say)
+        {
+            foreach (var t in it.WatchedPrograms())
+            {
+                if (string.IsNullOrEmpty(t.Path)) continue;
+                foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(t.Path)))
+                {
+                    using (p)
+                    {
+                        try
+                        {
+                            if (session0Only && p.SessionId != 0) continue;
+                            string path = ProcessPath(p.Id);
+                            if (path == null || !string.Equals(Path.GetFullPath(path), Path.GetFullPath(t.Path), StringComparison.OrdinalIgnoreCase)) continue;
+                            if (say != null) say(Path.GetFileName(t.Path) + " 닫는 중");
+                            Core.Log("[" + it.Id + "] 닫음 " + path + " (PID " + p.Id + ", 세션 " + p.SessionId + ")");
+                            Run(Sys32("taskkill.exe"), "/PID " + p.Id + " /F", 30000);
+                            try { p.WaitForExit(10000); } catch { }   // 파일 잠금이 풀릴 때까지
+                        }
+                        catch (Exception e) { Core.Log("[" + it.Id + "] " + t.Path + " 닫기 실패: " + e.Message); }
+                    }
+                }
+            }
+        }
+
+        /// <summary>pid 가 ancestor 의 자손인가 (부모를 몇 단계 거슬러 올라가 본다).</summary>
+        static bool IsDescendantOf(int pid, int ancestor)
+        {
+            int cur = pid;
+            for (int i = 0; i < 8 && cur > 4; i++)
+            {
+                int parent = 0;
+                using (var s = new System.Management.ManagementObjectSearcher("SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = " + cur))
+                using (var r = s.Get())
+                    foreach (System.Management.ManagementObject o in r) using (o) parent = Convert.ToInt32(o["ParentProcessId"]);
+                if (parent == ancestor) return true;
+                if (parent == 0 || parent == cur) return false;
+                cur = parent;
+            }
+            return false;
+        }
+
+        /// <summary>uninstallFirst: 깔려 있으면 옛 판 제거 프로그램을 조용히 돌리고 끝날 때까지 기다린다. Inno 제거 프로그램은 자신을
+        /// 임시 폴더로 복사해 다시 띄우고 곧바로 끝나므로, 제거 프로그램 파일이 사라질 때까지(최대 5분) 기다린다.</summary>
+        void UninstallOld(Item it)
+        {
+            var u = it.UninstallFirst;
+            if (u == null || string.IsNullOrEmpty(u.Path) || !File.Exists(u.Path)) return;
+            Say(it.Id, "installing", "이전 판 조용히 제거 중");
+            Run(u.Path, u.Args, 10 * 60 * 1000);
+            var until = DateTime.Now.AddMinutes(5);
+            while (File.Exists(u.Path) && DateTime.Now < until) Thread.Sleep(1000);
+            if (File.Exists(u.Path)) Core.Log("[" + it.Id + "] 이전 판 제거 프로그램이 5분 안에 끝나지 않음 — 그대로 설치 진행");
+            else Core.Log("[" + it.Id + "] 이전 판 제거 끝");
+        }
+
+        static string ProcessPath(int pid)
+        {
+            using (var s = new System.Management.ManagementObjectSearcher("SELECT ExecutablePath FROM Win32_Process WHERE ProcessId = " + pid))
+            using (var r = s.Get())
+                foreach (System.Management.ManagementObject o in r) using (o) return o["ExecutablePath"] as string;
+            return null;
         }
 
         /// <summary>새 판을 넣은 뒤 드라이버 저장소에 남은 같은 INF 의 예전 판을 지운다 — 업데이트를 거듭해도 깔끔하게.
@@ -238,6 +631,12 @@ namespace CoreDot
 
         public static int Run(string file, string args, int timeoutMs)
         {
+            return Run(file, args, timeoutMs, null);
+        }
+
+        /// <param name="started">프로세스가 뜨면 PID 를 알려 준다 (하위 설치 감시용)</param>
+        public static int Run(string file, string args, int timeoutMs, Action<int> started)
+        {
             Core.Log("> " + Path.GetFileName(file) + " " + args);
             var psi = new ProcessStartInfo(file, args);
             psi.UseShellExecute = false;
@@ -253,6 +652,7 @@ namespace CoreDot
                 p.OutputDataReceived += delegate(object o, DataReceivedEventArgs e) { if (!string.IsNullOrWhiteSpace(e.Data)) Core.Log("    " + e.Data); };
                 p.ErrorDataReceived += delegate(object o, DataReceivedEventArgs e) { if (!string.IsNullOrWhiteSpace(e.Data)) Core.Log("    ! " + e.Data); };
                 p.Start();
+                if (started != null) { try { started(p.Id); } catch { } }
                 p.BeginOutputReadLine();
                 p.BeginErrorReadLine();
                 if (!p.WaitForExit(timeoutMs))
@@ -260,7 +660,11 @@ namespace CoreDot
                     try { p.Kill(); } catch { }
                     throw new Exception("시간 초과: " + Path.GetFileName(file));
                 }
-                p.WaitForExit();
+                // 출력 끝까지 기다리기 — 손자 프로세스(예: 상주 프로그램)가 출력 통로를 물려받으면 영영 안 끝나므로 15초까지만
+                var drain = new Thread(delegate() { try { p.WaitForExit(); } catch { } });
+                drain.IsBackground = true;
+                drain.Start();
+                drain.Join(15000);
                 Core.Log("  종료 코드 " + p.ExitCode);
                 return p.ExitCode;
             }
@@ -345,6 +749,7 @@ namespace CoreDot
                 {
                     var cat = Catalog.Fetch();
                     var engine = new Engine();
+                    engine.SkipIfCurrent = req.ContainsKey("auto") && req["auto"] is bool && (bool)req["auto"];
                     engine.Report = delegate(string id, string state, string msg)
                     {
                         lock (statusLock) { items[id] = State(state, msg); }
@@ -357,11 +762,12 @@ namespace CoreDot
                         bool ok = engine.Install(cat, id);
                         if (id == "manager" && ok && i < ids.Count - 1)
                         {
-                            HandOff(rid, ids.GetRange(i + 1, ids.Count - i - 1), items, engine.NeedReboot || (status["reboot"] is bool && (bool)status["reboot"]));
+                            HandOff(rid, ids.GetRange(i + 1, ids.Count - i - 1), items, engine.NeedReboot || (status["reboot"] is bool && (bool)status["reboot"]), engine.SkipIfCurrent);
                             WriteStatus(status);
                             return;   // done 은 새 판이 쓴다
                         }
                     }
+                    Engine.EnsureAutostarts(cat);
                     if (engine.NeedReboot) status["reboot"] = true;
                 }
             }
@@ -377,7 +783,7 @@ namespace CoreDot
 
         /// <summary>같은 요청 번호로 남은 항목을 다시 적고 작업을 한 번 더 부른다 — 작업 설정이 '줄 세우기' 라 지금 것이
         /// 끝나면 새 판 exe 로 이어서 돈다. 관리센터 창은 같은 요청 번호의 상태를 계속 본다.</summary>
-        static void HandOff(string rid, List<string> rest, Dictionary<string, object> items, bool reboot)
+        static void HandOff(string rid, List<string> rest, Dictionary<string, object> items, bool reboot, bool auto)
         {
             var done = new Dictionary<string, object>();
             lock (statusLock)
@@ -395,6 +801,7 @@ namespace CoreDot
             req["done"] = done;
             req["reboot"] = reboot;
             req["by"] = "handoff";
+            req["auto"] = auto;
             File.WriteAllText(Path.Combine(Paths.Requests, rid + ".json"), Core.ToJson(req), Encoding.UTF8);
             handedOff = true;
             Core.Log("==== 요청 " + rid + " 남은 항목 [" + string.Join(", ", rest.ToArray()) + "] 을 새 관리센터로 넘김");
@@ -432,15 +839,22 @@ namespace CoreDot
         public const string TaskPath = @"\CoreDot\Installer";
 
         /// <summary>요청을 적고 서비스를 깨운다. 요청 id 를 돌려준다.</summary>
-        public static string Request(string action, IList<string> ids)
+        /// <param name="interactive">false 면 작업을 못 부를 때 관리자 확인 창을 띄우지 않고 실패로 둔다 (자동 업데이트 — 아무도 없는 키오스크)</param>
+        public static string Request(string action, IList<string> ids, bool interactive = true)
         {
             string rid = DateTime.Now.ToString("yyyyMMddHHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
             var req = new Dictionary<string, object>();
             req["action"] = action;
             req["ids"] = ids;
             req["by"] = Environment.UserName;
+            req["auto"] = !interactive;   // 자동 업데이트 — 서비스가 이미 최신인 것은 다시 깔지 않는다
             File.WriteAllText(Path.Combine(Paths.Requests, rid + ".json"), Core.ToJson(req), Encoding.UTF8);
             int code = Engine.Run(Engine.Sys32("schtasks.exe"), "/Run /TN \"" + TaskPath + "\"", 30000);
+            if (code != 0 && !interactive)
+            {
+                Core.TryDelete(Path.Combine(Paths.Requests, rid + ".json"));
+                throw new Exception("설치 작업을 부르지 못했습니다 (코드 " + code + ")");
+            }
             if (code != 0)
             {
                 // 작업이 없거나 못 부르면 — 관리자 확인을 받아 직접 실행

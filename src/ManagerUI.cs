@@ -1,4 +1,4 @@
-// 관리센터 창 · 새 버전 알림 창 · 설치 진행 창 (사용자 권한)
+// 관리센터 창 · 설치 진행 창 · 설치/업데이트 공용 (사용자 권한)
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -32,6 +32,19 @@ namespace CoreDot
             return b;
         }
 
+        /// <summary>업데이트 방식 고르는 상자 (자동 업데이트 · 알림만 · 업데이트 안 함). changed 는 고를 때마다.</summary>
+        public static ComboBox ModeBox(string mode, Action<string> changed)
+        {
+            var c = new ComboBox();
+            c.DropDownStyle = ComboBoxStyle.DropDownList;
+            foreach (var m in Prefs.Modes) c.Items.Add(Prefs.Label(m));
+            c.SelectedIndex = Math.Max(0, Array.IndexOf(Prefs.Modes, mode));
+            c.Width = 126;
+            c.Margin = new Padding(4, 2, 0, 0);
+            c.SelectedIndexChanged += delegate { if (changed != null) changed(Prefs.Modes[c.SelectedIndex]); };
+            return c;
+        }
+
         public static void Open(string file, string args)
         {
             try
@@ -44,21 +57,173 @@ namespace CoreDot
         }
     }
 
+    // ================================================================== 설치 · 업데이트 (창 있이 · 없이 같이 씀)
+    /// <summary>시스템 항목은 SYSTEM 서비스에, 코어닷프린터는 이 프로세스(사용자 권한)에서 설치한다.
+    /// 진행 창(ProgressForm)과 자동 업데이트(--check, 창 없음)가 같이 쓴다.</summary>
+    static class Updater
+    {
+        public class Result { public int Fails; public bool Reboot, ManagerUpdated; }
+
+        /// <param name="set">(id, state, message) — 창이 없으면 null</param>
+        /// <param name="interactive">false 면 서비스를 못 부를 때 관리자 확인 창을 띄우지 않는다 (자동 업데이트)</param>
+        /// <param name="catalog">방금 받은 목록 (없으면 마지막으로 받아 둔 것) — 무엇을 닫고 다시 켤지 여기서 본다</param>
+        public static Result Install(List<Catalog.Pending> jobs, ReleaseInfo printer, Action<string, string, string> set, bool interactive = true, CatalogData catalog = null)
+        {
+            var r = new Result();
+            Action<string, string, string> Set = delegate(string id, string st, string msg)
+            {
+                if (set != null) set(id, st, msg);
+            };
+            var sys = new List<string>();
+            foreach (var j in jobs) if (j.Id != "coredotprinter") sys.Add(j.Id);
+            var cat = catalog ?? Catalog.LoadCached();
+            var wasRunning = RunningBefore(cat, sys);   // 업데이트하는 것 중 지금 켜져 있는 프로그램 — 끝나고 꺼져 있으면 다시 켠다
+
+            if (sys.Count > 0)
+            {
+                try
+                {
+                    string rid = ServiceClient.Request("install", sys, interactive);
+                    var until = DateTime.Now.AddMinutes(60);
+                    Dictionary<string, object> st = null;
+                    while (DateTime.Now < until)
+                    {
+                        Thread.Sleep(700);
+                        st = ServiceClient.ReadStatus();
+                        if (st == null || Core.Str(st, "request") != rid) continue;
+                        var items = st["items"] as Dictionary<string, object>;
+                        if (items != null)
+                            foreach (var kv in items)
+                            {
+                                var d = kv.Value as Dictionary<string, object>;
+                                Set(kv.Key, Core.Str(d, "state"), Core.Str(d, "message"));
+                            }
+                        if (st["done"] is bool && (bool)st["done"]) break;
+                    }
+                    if (st == null || Core.Str(st, "request") != rid || !(st["done"] is bool && (bool)st["done"]))
+                        throw new Exception("설치 서비스가 응답하지 않습니다.");
+                    if (Core.Str(st, "error") != null) throw new Exception(Core.Str(st, "error"));
+                    r.Reboot = st["reboot"] is bool && (bool)st["reboot"];
+                    var its = st["items"] as Dictionary<string, object>;
+                    foreach (var id in sys)
+                    {
+                        var d = its != null && its.ContainsKey(id) ? its[id] as Dictionary<string, object> : null;
+                        string s = Core.Str(d, "state");
+                        if (s != "done") { r.Fails++; if (s != "error") Set(id, "error", "설치되지 않음"); }
+                        else if (id == "manager") r.ManagerUpdated = true;
+                    }
+                }
+                catch (Exception e)
+                {
+                    Core.Log("설치 요청 실패: " + e);
+                    foreach (var id in sys) Set(id, "error", e.Message);
+                    r.Fails += sys.Count;
+                }
+                // 서비스(SYSTEM)는 사용자 화면에 못 띄운다 — 로그인 전까지 기다리지 않게 여기서 켠다 (예: IDP Watchman)
+                Engine.StartAutostarts(Catalog.LoadCached(), false);
+                Relaunch(wasRunning);
+            }
+
+            foreach (var j in jobs)
+            {
+                if (j.Id != "coredotprinter") continue;
+                try
+                {
+                    var pr = printer ?? Core.GetLatestPrinter();
+                    Core.UpdatePrinterApp(pr, false, delegate(string s) { Set("coredotprinter", "installing", s); });
+                    Set("coredotprinter", "done", pr.Tag + " 설치 완료");
+                }
+                catch (Exception e)
+                {
+                    Core.Log("코어닷프린터 업데이트 실패: " + e);
+                    Set("coredotprinter", "error", e.Message);
+                    r.Fails++;
+                }
+            }
+            return r;
+        }
+
+        /// <summary>서비스에 '맞추기'(자동 실행 · SysWOW64 사본)만 시키고 끝나길 기다린 뒤, 닫힌 자동 실행 프로그램을 사용자 화면에 켠다.
+        /// 성공하면 true.</summary>
+        public static bool Ensure(CatalogData cat)
+        {
+            try
+            {
+                string rid = ServiceClient.Request("ensure", new List<string>(), false);
+                var until = DateTime.Now.AddMinutes(5);
+                while (DateTime.Now < until)
+                {
+                    Thread.Sleep(1000);
+                    var st = ServiceClient.ReadStatus();
+                    if (st != null && Core.Str(st, "request") == rid && st["done"] is bool && (bool)st["done"])
+                    {
+                        Engine.StartAutostarts(cat, false);
+                        return Core.Str(st, "error") == null;
+                    }
+                }
+                Core.Log("맞추기 요청: 서비스가 응답하지 않음");
+            }
+            catch (Exception e) { Core.Log("맞추기 요청 실패: " + e.Message); }
+            Engine.StartAutostarts(cat, false);
+            return false;
+        }
+
+        static bool IsRunning(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            int session = Process.GetCurrentProcess().SessionId;
+            foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(path)))
+                using (p) if (p.SessionId == session) return true;
+            return false;
+        }
+
+        static List<Tool> RunningBefore(CatalogData cat, List<string> ids)
+        {
+            var list = new List<Tool>();
+            if (cat == null) return list;
+            foreach (var id in ids)
+            {
+                var it = cat.Find(id);
+                if (it == null) continue;
+                foreach (var t in it.WatchedPrograms()) if (IsRunning(t.Path)) { list.Add(t); Core.Log("업데이트 전 실행 중: " + t.Path); }
+            }
+            return list;
+        }
+
+        static void Relaunch(List<Tool> list)
+        {
+            foreach (var t in list)
+            {
+                try
+                {
+                    if (IsRunning(t.Path) || !File.Exists(t.Path)) continue;
+                    var psi = new ProcessStartInfo(t.Path, t.Args ?? "");
+                    psi.WorkingDirectory = Path.GetDirectoryName(t.Path);
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                    Core.Log("업데이트 뒤 다시 켬: " + t.Path);
+                }
+                catch (Exception e) { Core.Log("다시 켜기 실패 " + t.Path + ": " + e.Message); }
+            }
+        }
+    }
+
     // ================================================================== 설치 진행 창
     /// <summary>시스템 항목은 SYSTEM 서비스에, 코어닷프린터는 이 프로세스(사용자 권한)에서 설치하고 진행을 보여 준다.</summary>
     class ProgressForm : Form
     {
         readonly List<Catalog.Pending> jobs;
         readonly ReleaseInfo printer;
+        readonly CatalogData cat;
         readonly Dictionary<string, Label> states = new Dictionary<string, Label>();
         readonly Label head;
         readonly Button close;
         bool finished;
         public bool ManagerUpdated;
 
-        public ProgressForm(List<Catalog.Pending> jobs, ReleaseInfo printer)
+        public ProgressForm(List<Catalog.Pending> jobs, ReleaseInfo printer, CatalogData cat = null)
         {
-            this.jobs = jobs; this.printer = printer;
+            this.jobs = jobs; this.printer = printer; this.cat = cat;
             Text = "코어닷 관리센터 — 설치";
             Font = UI.Base;
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -118,69 +283,10 @@ namespace CoreDot
 
         void Work()
         {
-            int fails = 0;
-            bool reboot = false;
-            var sys = new List<string>();
-            foreach (var j in jobs) if (j.Id != "coredotprinter") sys.Add(j.Id);
-
-            if (sys.Count > 0)
-            {
-                try
-                {
-                    string rid = ServiceClient.Request("install", sys);
-                    var until = DateTime.Now.AddMinutes(60);
-                    Dictionary<string, object> st = null;
-                    while (DateTime.Now < until)
-                    {
-                        Thread.Sleep(700);
-                        st = ServiceClient.ReadStatus();
-                        if (st == null || Core.Str(st, "request") != rid) continue;
-                        var items = st["items"] as Dictionary<string, object>;
-                        if (items != null)
-                            foreach (var kv in items)
-                            {
-                                var d = kv.Value as Dictionary<string, object>;
-                                Set(kv.Key, Core.Str(d, "state"), Core.Str(d, "message"));
-                            }
-                        if (st["done"] is bool && (bool)st["done"]) break;
-                    }
-                    if (st == null || Core.Str(st, "request") != rid || !(st["done"] is bool && (bool)st["done"]))
-                        throw new Exception("설치 서비스가 응답하지 않습니다.");
-                    if (Core.Str(st, "error") != null) throw new Exception(Core.Str(st, "error"));
-                    reboot = st["reboot"] is bool && (bool)st["reboot"];
-                    var its = st["items"] as Dictionary<string, object>;
-                    foreach (var id in sys)
-                    {
-                        var d = its != null && its.ContainsKey(id) ? its[id] as Dictionary<string, object> : null;
-                        string s = Core.Str(d, "state");
-                        if (s != "done") { fails++; if (s != "error") Set(id, "error", "설치되지 않음"); }
-                        else if (id == "manager") ManagerUpdated = true;
-                    }
-                }
-                catch (Exception e)
-                {
-                    Core.Log("설치 요청 실패: " + e);
-                    foreach (var id in sys) Set(id, "error", e.Message);
-                    fails += sys.Count;
-                }
-            }
-
-            foreach (var j in jobs)
-            {
-                if (j.Id != "coredotprinter") continue;
-                try
-                {
-                    var r = printer ?? Core.GetLatestPrinter();
-                    Core.UpdatePrinterApp(r, false, delegate(string s) { Set("coredotprinter", "installing", s); });
-                    Set("coredotprinter", "done", r.Tag + " 설치 완료");
-                }
-                catch (Exception e)
-                {
-                    Core.Log("코어닷프린터 업데이트 실패: " + e);
-                    Set("coredotprinter", "error", e.Message);
-                    fails++;
-                }
-            }
+            var r = Updater.Install(jobs, printer, Set, true, cat);
+            int fails = r.Fails;
+            bool reboot = r.Reboot;
+            ManagerUpdated = r.ManagerUpdated;
 
             BeginInvoke((MethodInvoker)delegate
             {
@@ -208,7 +314,7 @@ namespace CoreDot
         }
     }
 
-    // ================================================================== 새 버전 · 새 프로그램 알림 (--check)
+    // ================================================================== 업데이트 알림 (--check, '알림만' 으로 고른 항목만)
     class PopupForm : Form
     {
         readonly List<Catalog.Pending> pending;
@@ -227,7 +333,7 @@ namespace CoreDot
             ShowInTaskbar = true;
 
             var title = new Label();
-            title.Text = "새로 설치하거나 업데이트할 것이 있습니다";
+            title.Text = "업데이트가 있습니다";
             title.Font = UI.Title;
             title.SetBounds(20, 16, 520, 30);
             Controls.Add(title);
@@ -237,7 +343,7 @@ namespace CoreDot
             {
                 var c = new CheckBox();
                 c.Checked = true;
-                c.Text = p.IsNew ? p.Title + "  —  새로 추가 (" + p.To + ")" : p.Title + "  —  " + p.From + " → " + p.To;
+                c.Text = p.Title + "  —  " + p.From + " → " + p.To;
                 c.SetBounds(24, y, 510, 26);
                 c.Tag = p;
                 checks.Add(c);
@@ -245,9 +351,15 @@ namespace CoreDot
                 y += 28;
             }
             var warn = new Label();
-            warn.Text = "설치하는 동안 코어닷프린터가 잠깐 꺼졌다 켜질 수 있습니다. 인쇄 중이 아닐 때 눌러 주세요.";
+            warn.Text = "업데이트하면 그 프로그램이 잠깐 꺼졌다 다시 켜집니다. 인쇄 중이 아닐 때 눌러 주세요.";
             warn.ForeColor = UI.Warn;
-            warn.SetBounds(20, y + 8, 520, 40);
+            warn.SetBounds(20, y + 8, 520, 42);
+            var hint = new Label();
+            hint.Text = "'알림만' 으로 고른 항목입니다. 관리센터 창에서 자동 업데이트로 바꿀 수 있습니다.";
+            hint.ForeColor = UI.Muted;
+            hint.Font = UI.Small;
+            hint.SetBounds(20, y + 50, 520, 22);
+            Controls.Add(hint);
             Controls.Add(warn);
 
             var later = UI.Btn("나중에", delegate { DialogResult = DialogResult.Cancel; Close(); });
@@ -260,13 +372,13 @@ namespace CoreDot
             ok.Font = UI.Bold;
             var bar = new FlowLayoutPanel();
             bar.FlowDirection = FlowDirection.RightToLeft;
-            bar.SetBounds(20, y + 56, 520, 40);
+            bar.SetBounds(20, y + 76, 520, 40);
             bar.Controls.Add(later);
             bar.Controls.Add(ok);
             Controls.Add(bar);
             AcceptButton = ok;
             CancelButton = later;
-            ClientSize = new Size(560, y + 104);
+            ClientSize = new Size(560, y + 124);
         }
 
         protected override void OnShown(EventArgs e)
@@ -291,8 +403,8 @@ namespace CoreDot
             Text = "코어닷 관리센터 " + Program.Version;
             Font = UI.Base;
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(940, 480);
-            Size = new Size(980, 640);
+            MinimumSize = new Size(1060, 480);
+            Size = new Size(1100, 640);
 
             var top = new Panel();
             top.Dock = DockStyle.Top;
@@ -384,8 +496,21 @@ namespace CoreDot
             return null;
         }
 
+        /// <summary>깔린 항목 줄에 붙는 업데이트 방식 상자 — 바꾸면 바로 저장.</summary>
+        Control ModeFor(string id, Dictionary<string, string> prefs)
+        {
+            string mode;
+            if (!prefs.TryGetValue(id, out mode)) mode = Prefs.Auto;
+            return UI.ModeBox(mode, delegate(string m)
+            {
+                if (!Prefs.Set(id, m))
+                    MessageBox.Show(this, "설정을 저장하지 못했습니다. 관리센터가 한 번 업데이트(또는 다시 설치)된 뒤에 바꿀 수 있습니다.", "코어닷 관리센터");
+            });
+        }
+
         void Build(Dictionary<string, string> have, List<Catalog.PrinterInfo> printers, string app, bool running)
         {
+            var prefs = Prefs.Load();
             rows.SuspendLayout();
             rows.Controls.Clear();
             int y = 0;
@@ -398,7 +523,8 @@ namespace CoreDot
                 if (app == null) { status = "설치 안 됨"; col = UI.Bad; }
                 else if (p != null) { status = "업데이트 있음 → " + p.To; col = UI.Warn; }
                 else { status = running ? "최신 · 실행 중" : "최신 · 꺼져 있음"; col = UI.Ok; }
-                var btns = new List<Button>();
+                var btns = new List<Control>();
+                if (app != null) btns.Add(ModeFor("coredotprinter", prefs));
                 if (app != null) btns.Add(UI.Btn("열기", delegate { Core.StartApp(false); }));
                 btns.Add(ActionButton("coredotprinter", app == null ? "설치" : p != null ? "업데이트" : null, "코어닷프린터", app, printer == null ? null : printer.Tag));
                 y = AddRow(y, "코어닷프린터", sub, status, col, btns);
@@ -412,7 +538,8 @@ namespace CoreDot
                     var p = PendingFor(it.Id);
                     string status;
                     Color col;
-                    var btns = new List<Button>();
+                    var btns = new List<Control>();
+                    if (v != null) btns.Add(ModeFor(it.Id, prefs));
                     var mine = new List<Catalog.PrinterInfo>();
                     foreach (var pr in printers) foreach (var dn in it.Printers) if (string.Equals(pr.Driver, dn, StringComparison.OrdinalIgnoreCase)) mine.Add(pr);
 
@@ -451,7 +578,7 @@ namespace CoreDot
                 var p = PendingFor("manager");
                 if (p != null)
                     y = AddRow(y, "코어닷 관리센터", Program.Version, "업데이트 있음 → " + p.To, UI.Warn,
-                        new List<Button> { ActionButton("manager", "업데이트", "코어닷 관리센터", Program.Version, p.To) });
+                        new List<Control> { ActionButton("manager", "업데이트", "코어닷 관리센터", Program.Version, p.To) });
             }
             rows.ResumeLayout();
         }
@@ -471,7 +598,7 @@ namespace CoreDot
             });
         }
 
-        int AddRow(int y, string name, string sub, string status, Color col, List<Button> btns)
+        int AddRow(int y, string name, string sub, string status, Color col, List<Control> btns)
         {
             var row = new Panel();
             row.SetBounds(0, y, rows.ClientSize.Width, 58);
@@ -492,7 +619,7 @@ namespace CoreDot
             var st = new Label();
             st.Text = status;
             st.ForeColor = col;
-            const int flowW = 440;
+            const int flowW = 560;
             st.SetBounds(254, 18, Math.Max(160, row.Width - flowW - 270), 22);
             st.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
             st.AutoEllipsis = true;
@@ -521,7 +648,7 @@ namespace CoreDot
 
         void RunJobs(List<Catalog.Pending> jobs)
         {
-            using (var f = new ProgressForm(jobs, printer))
+            using (var f = new ProgressForm(jobs, printer, cat))
             {
                 f.ShowDialog(this);
                 if (f.ManagerUpdated)
